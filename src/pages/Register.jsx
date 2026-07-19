@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { register } from '../services/authService.js'
+import { useAuth } from '../context/AuthContext.jsx'
 
 // Regex email — khớp app.html
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export default function Register() {
   const navigate = useNavigate()
+  const { register } = useAuth()
   const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '' })
   const [errors, setErrors] = useState({})
   const [submitting, setSubmitting] = useState(false)

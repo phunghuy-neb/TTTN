@@ -1,4 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { AuthProvider } from './context/AuthContext.jsx'
+import { PrivateRoute, GuestRoute } from './routes/PrivateRoute.jsx'
 import Layout from './components/Layout.jsx'
 import Home from './pages/Home.jsx'
 import Login from './pages/Login.jsx'
@@ -12,20 +14,31 @@ import NotFound from './pages/NotFound.jsx'
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<Home />} />
-          <Route path="tour/:id" element={<TourDetail />} />
-          <Route path="login" element={<Login />} />
-          <Route path="register" element={<Register />} />
-          <Route path="profile" element={<Profile />} />
-          <Route path="checkout" element={<Checkout />} />
-          <Route path="payment" element={<Payment />} />
-          <Route path="bookings" element={<Bookings />} />
-          <Route path="*" element={<NotFound />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route index element={<Home />} />
+            <Route path="tour/:id" element={<TourDetail />} />
+
+            {/* Chỉ dành cho khách chưa đăng nhập */}
+            <Route element={<GuestRoute />}>
+              <Route path="login" element={<Login />} />
+              <Route path="register" element={<Register />} />
+            </Route>
+
+            {/* Yêu cầu đăng nhập */}
+            <Route element={<PrivateRoute />}>
+              <Route path="profile" element={<Profile />} />
+              <Route path="checkout" element={<Checkout />} />
+              <Route path="payment" element={<Payment />} />
+              <Route path="bookings" element={<Bookings />} />
+            </Route>
+
+            <Route path="*" element={<NotFound />} />
+          </Route>
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   )
 }

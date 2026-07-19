@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { login } from '../services/authService.js'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext.jsx'
 
 // Regex email — khớp app.html
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export default function Login() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { login } = useAuth()
   const [form, setForm] = useState({ email: '', password: '' })
   const [errors, setErrors] = useState({}) // { email, password, form }
   const [submitting, setSubmitting] = useState(false)
@@ -41,7 +43,8 @@ export default function Login() {
       setErrors({ form: res.message || 'Email hoặc mật khẩu không đúng.' })
       return
     }
-    navigate('/')
+    // Quay lại nơi định đến trước khi bị chặn, mặc định về trang chủ
+    navigate(location.state?.from?.pathname || '/', { replace: true })
   }
 
   return (
