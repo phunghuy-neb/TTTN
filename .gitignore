@@ -46,6 +46,11 @@ logs/
 # CLAUDE.md & AGENTS.md do sync.py sinh -> chi dung local, khong push.
 CLAUDE.md
 AGENTS.md
+# PROJECT.md (nguon luat) + sync.py: chi dung local, khong push.
+PROJECT.md
+sync.py
+# Agents/: thu muc chua toan bo file Claude/agent + tham chieu (app.html) - local only.
+Agents/
 
 # --- File he dieu hanh / rac ---
 .DS_Store
