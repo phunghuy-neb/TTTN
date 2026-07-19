@@ -1,0 +1,18 @@
+{
+  "name": "tour-ai-service",
+  "version": "1.0.0",
+  "description": "Môi trường Node.js cho phần AI (RAG) của hệ thống đặt tour du lịch — Tuần 2",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "test:gemini": "node src/scripts/testGemini.js",
+    "sync:vectors": "node src/scripts/syncTourVectors.js",
+    "query:test": "node src/scripts/testQuery.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.11.0",
+    "chromadb": "^1.9.2",
+    "dotenv": "^16.4.5",
+    "mongoose": "^8.5.0"
+  }
+}
