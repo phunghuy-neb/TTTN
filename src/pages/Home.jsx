@@ -1,10 +1,27 @@
+import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { TOURS } from '../data/tours.js'
 import TourCard from '../components/TourCard.jsx'
 
 // Trang chủ tĩnh — dữ liệu giả Tuần 2
 export default function Home() {
-  const featured = TOURS.slice(0, 6)
-  const deals = TOURS.filter((t) => t.oldPrice != null)
+  // Chỉ hiển thị tour đang mở bán (UC-04) — mock chưa qua service nên lọc tại đây
+  const published = TOURS.filter((t) => t.status === 'published')
+  const featured = published.slice(0, 6)
+  const deals = published.filter((t) => t.oldPrice != null)
+
+  const navigate = useNavigate()
+  // State cục bộ cho khối tìm kiếm hero (chưa điều hướng nên dùng state là đúng)
+  const [destination, setDestination] = useState('')
+  const [days, setDays] = useState('2-3')
+
+  // Tìm tour → điều hướng sang /tours với query chỉ chứa tham số có giá trị
+  function handleSearch() {
+    const params = new URLSearchParams()
+    if (destination.trim()) params.set('q', destination.trim())
+    if (days) params.set('days', days)
+    navigate(`/tours?${params.toString()}`)
+  }
 
   return (
     <div>
@@ -26,14 +43,20 @@ export default function Home() {
                 type="text"
                 placeholder="Bạn muốn đi đâu?"
                 className="field-input sm:flex-1"
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
               />
-              <select className="field-input sm:w-[160px]">
-                <option>2–3 ngày</option>
-                <option>4–5 ngày</option>
-                <option>Trên 5 ngày</option>
+              <select
+                className="field-input sm:w-[160px]"
+                value={days}
+                onChange={(e) => setDays(e.target.value)}
+              >
+                <option value="2-3">2–3 ngày</option>
+                <option value="4-5">4–5 ngày</option>
+                <option value="6+">Trên 5 ngày</option>
               </select>
-              {/* Nút chỉ hiển thị — chưa gắn logic tìm kiếm */}
-              <button type="button" className="btn-coral sm:w-auto">
+              <button type="button" className="btn-coral sm:w-auto" onClick={handleSearch}>
                 Tìm tour
               </button>
             </div>
@@ -47,8 +70,13 @@ export default function Home() {
         <h2 className="mt-2 font-heading text-[30px] font-semibold text-ink">Khám phá tour</h2>
         <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {featured.map((tour) => (
-            <TourCard key={tour.id} tour={tour} />
+            <TourCard key={tour._id} tour={tour} />
           ))}
+        </div>
+        <div className="mt-8 flex justify-center">
+          <Link to="/tours" className="btn-ghost">
+            Xem tất cả tour →
+          </Link>
         </div>
       </section>
 
@@ -60,7 +88,7 @@ export default function Home() {
           {deals.length > 0 ? (
             <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
               {deals.map((tour) => (
-                <TourCard key={tour.id} tour={tour} />
+                <TourCard key={tour._id} tour={tour} />
               ))}
             </div>
           ) : (

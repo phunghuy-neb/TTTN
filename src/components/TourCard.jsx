@@ -13,7 +13,7 @@ export default function TourCard({ tour }) {
 
   return (
     <Link
-      to={`/tour/${tour.id}`}
+      to={`/tour/${tour.slug}`}
       className="card-surface group block overflow-hidden transition hover:-translate-y-1 hover:shadow-float"
     >
       {/* Ảnh minh họa tỉ lệ 4/3 */}
@@ -25,7 +25,7 @@ export default function TourCard({ tour }) {
           </div>
         ) : (
           <img
-            src={tour.image}
+            src={tour.images?.[0]}
             alt={tour.name}
             loading="lazy"
             onError={() => setImgError(true)}

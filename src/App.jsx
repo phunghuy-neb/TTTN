@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext.jsx'
 import { PrivateRoute, GuestRoute } from './routes/PrivateRoute.jsx'
 import Layout from './components/Layout.jsx'
 import Home from './pages/Home.jsx'
+import TourList from './pages/TourList.jsx'
 import Login from './pages/Login.jsx'
 import Register from './pages/Register.jsx'
 import TourDetail from './pages/TourDetail.jsx'
@@ -19,7 +20,8 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Home />} />
-            <Route path="tour/:id" element={<TourDetail />} />
+            <Route path="tours" element={<TourList />} />
+            <Route path="tour/:slug" element={<TourDetail />} />
 
             {/* Chỉ dành cho khách chưa đăng nhập */}
             <Route element={<GuestRoute />}>
