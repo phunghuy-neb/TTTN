@@ -1,19 +1,88 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { TOURS } from '../data/tours.js'
+import { getTours } from '../services/tourService.js'
 import TourCard from '../components/TourCard.jsx'
 
-// Trang chủ tĩnh — dữ liệu giả Tuần 2
-export default function Home() {
-  // Chỉ hiển thị tour đang mở bán (UC-04) — mock chưa qua service nên lọc tại đây
-  const published = TOURS.filter((t) => t.status === 'published')
-  const featured = published.slice(0, 6)
-  const deals = published.filter((t) => t.oldPrice != null)
+// Thẻ skeleton lúc đang tải — giữ đúng tỉ lệ TourCard để bố cục không nhảy
+function SkeletonCard() {
+  return (
+    <div className="card-surface overflow-hidden">
+      <div className="aspect-[4/3] animate-pulse bg-sand" />
+      <div className="p-4">
+        <div className="h-4 w-1/2 animate-pulse rounded bg-sand" />
+        <div className="mt-3 h-5 w-3/4 animate-pulse rounded bg-sand" />
+        <div className="mt-4 h-6 w-2/5 animate-pulse rounded bg-sand" />
+      </div>
+    </div>
+  )
+}
 
+// Lưới skeleton đúng số lượng thẻ mong đợi của mỗi section
+function TourGridSkeleton({ count }) {
+  return (
+    <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+      {Array.from({ length: count }).map((_, i) => (
+        <SkeletonCard key={i} />
+      ))}
+    </div>
+  )
+}
+
+// Khối lỗi + nút thử lại (§6.7)
+function ErrorState({ message, onRetry }) {
+  return (
+    <div className="card-surface mt-7 p-6 text-center">
+      <p className="text-coralD">{message}</p>
+      <button type="button" className="btn-teal mt-4" onClick={onRetry}>
+        Thử lại
+      </button>
+    </div>
+  )
+}
+
+// Trang chủ — dữ liệu tour lấy qua tầng service, KHÔNG lọc/cắt trong component
+export default function Home() {
   const navigate = useNavigate()
-  // State cục bộ cho khối tìm kiếm hero (chưa điều hướng nên dùng state là đúng)
+  // State cục bộ cho khối tìm kiếm hero (state giao diện, không phải dữ liệu)
   const [destination, setDestination] = useState('')
   const [days, setDays] = useState('2-3')
+
+  // Dữ liệu tour đến từ getTours(); loading/error dùng chung cho cả hai lời gọi
+  const [featured, setFeatured] = useState([])
+  const [deals, setDeals] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  // Tải song song hai nhóm tour để không cộng dồn độ trễ
+  async function loadTours() {
+    setLoading(true)
+    setError('')
+    try {
+      const [featuredRes, dealsRes] = await Promise.all([
+        getTours({ page: 1, limit: 6 }),
+        getTours({ page: 1, limit: 6, deals: true }),
+      ])
+      if (!featuredRes.success || !dealsRes.success) {
+        setError(featuredRes.message || dealsRes.message || 'Không tải được danh sách tour.')
+        setFeatured([])
+        setDeals([])
+        return
+      }
+      setFeatured(featuredRes.data)
+      setDeals(dealsRes.data)
+    } catch {
+      setError('Không tải được danh sách tour. Vui lòng thử lại.')
+      setFeatured([])
+      setDeals([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Chạy một lần khi mount
+  useEffect(() => {
+    loadTours()
+  }, [])
 
   // Tìm tour → điều hướng sang /tours với query chỉ chứa tham số có giá trị
   function handleSearch() {
@@ -36,7 +105,7 @@ export default function Home() {
             Hàng trăm hành trình chọn lọc khắp ba miền, đặt nhanh trong vài phút và trải nghiệm trọn vẹn.
           </p>
 
-          {/* Khối tìm kiếm — CHỈ giao diện, logic lọc nối ở Tuần 3 */}
+          {/* Khối tìm kiếm — CHỈ giao diện, điều hướng sang /tours */}
           <div className="card-surface mt-8 max-w-[720px] p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <input
@@ -68,11 +137,21 @@ export default function Home() {
       <section id="tours" className="wrap py-[56px]">
         <p className="eyebrow">Điểm đến nổi bật</p>
         <h2 className="mt-2 font-heading text-[30px] font-semibold text-ink">Khám phá tour</h2>
-        <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {featured.map((tour) => (
-            <TourCard key={tour._id} tour={tour} />
-          ))}
-        </div>
+        {loading ? (
+          <TourGridSkeleton count={6} />
+        ) : error ? (
+          <ErrorState message={error} onRetry={loadTours} />
+        ) : featured.length > 0 ? (
+          <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {featured.map((tour) => (
+              <TourCard key={tour._id} tour={tour} />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-7 text-muted">
+            Hiện chưa có tour nào để hiển thị. Vui lòng quay lại sau hoặc khám phá tất cả tour bên dưới.
+          </p>
+        )}
         <div className="mt-8 flex justify-center">
           <Link to="/tours" className="btn-ghost">
             Xem tất cả tour →
@@ -85,7 +164,11 @@ export default function Home() {
         <div className="wrap py-[56px]">
           <p className="eyebrow">Giá tốt hôm nay</p>
           <h2 className="mt-2 font-heading text-[30px] font-semibold text-ink">Tour đang ưu đãi</h2>
-          {deals.length > 0 ? (
+          {loading ? (
+            <TourGridSkeleton count={3} />
+          ) : error ? (
+            <ErrorState message={error} onRetry={loadTours} />
+          ) : deals.length > 0 ? (
             <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
               {deals.map((tour) => (
                 <TourCard key={tour._id} tour={tour} />

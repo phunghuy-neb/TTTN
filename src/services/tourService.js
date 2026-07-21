@@ -27,11 +27,18 @@ export async function getTours({
   maxPrice = 0,
   days = '',
   sort = '',
+  deals = false,
 } = {}) {
   await delay(300)
 
   // Chỉ hiển thị tour đang mở bán — lọc TRƯỚC mọi bộ lọc khác (UC-04 §13)
   let list = TOURS.filter((t) => t.status === 'published')
+
+  // deals: chỉ giữ tour đang giảm giá (oldPrice > basePrice) — điều kiện ưu đãi UC-04 §13.
+  // Đặt ngay sau bước lọc published, trước các bộ lọc còn lại.
+  // Khi nối API thật, `deals` sẽ được truyền thành query param —
+  // cần thống nhất tên tham số này với Backend.
+  if (deals) list = list.filter((t) => t.oldPrice != null && t.oldPrice > t.basePrice)
 
   // q: tìm không dấu trong name và location
   if (q) {
