@@ -57,10 +57,6 @@ export default function Login() {
         <h1 className="text-[28px]">Đăng nhập</h1>
         <p className="mb-5 mt-1.5 text-[14.5px] text-muted">Chào mừng trở lại VietVoyage</p>
 
-        <div className="mb-[18px] rounded-[12px] border border-[#d5e8e2] bg-[#F0F7F5] px-3.5 py-3 text-[13px] text-teal">
-          Tài khoản demo: <b>demo@vietvoyage.vn</b> / mật khẩu <b>123456</b>
-        </div>
-
         {/* Lỗi tổng — sai email/mật khẩu */}
         {errors.form && (
           <div className="mb-4 rounded-[11px] border border-coral/40 bg-coral/5 px-3.5 py-2.5 text-[13.5px] text-coralD">

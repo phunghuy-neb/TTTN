@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getTours } from '../services/tourService.js'
 import TourCard from '../components/TourCard.jsx'
@@ -23,12 +23,18 @@ export default function TourList() {
 
   const filters = { q, region, minPrice, maxPrice, days, sort }
 
+  // Đánh số mỗi lần gọi: gõ từ khoá hoặc đổi bộ lọc liên tiếp khiến nhiều request cùng bay,
+  // request cũ về sau sẽ ghi đè kết quả của bộ lọc mới nếu không bỏ qua kết quả lỗi thời.
+  const requestId = useRef(0)
+
   // Tải danh sách theo bộ lọc hiện tại trên URL
   async function load() {
+    const id = ++requestId.current
     setLoading(true)
     setError('')
     try {
       const res = await getTours({ page, q, region, minPrice, maxPrice, days, sort })
+      if (id !== requestId.current) return // đã có request mới hơn — bỏ kết quả này
       if (!res.success) {
         setError('Không tải được danh sách tour.')
         return
@@ -36,9 +42,10 @@ export default function TourList() {
       setTours(res.data)
       setPagination(res.pagination)
     } catch {
+      if (id !== requestId.current) return
       setError('Không tải được danh sách tour.')
     } finally {
-      setLoading(false)
+      if (id === requestId.current) setLoading(false)
     }
   }
 

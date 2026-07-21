@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { formatPrice } from '../data/tours.js'
+import { formatPrice } from '../utils/format.js'
 
 // Thẻ tour — ảnh 4/3 phía trên, thân chứa thông tin và giá
 export default function TourCard({ tour }) {
