@@ -7,6 +7,10 @@ import express from 'express'
 import cors from 'cors'
 import connectDB from './src/config/db.js'
 import authRoutes from './src/routes/authRoutes.js'
+import tourRoutes from './src/routes/tourRoutes.js'
+import userRoutes from './src/routes/userRoutes.js'
+import bookingRoutes from './src/routes/bookingRoutes.js'
+import adminBookingRoutes from './src/routes/adminBookingRoutes.js'
 
 // ── Kết nối MongoDB ───────────────────────────────────────────
 connectDB()
@@ -25,6 +29,9 @@ app.use(
 // Parse JSON body từ request
 app.use(express.json())
 
+// Phục vụ file tĩnh trong thư mục uploads (ảnh tour)
+app.use('/uploads', express.static('uploads'))
+
 // ── Routes ────────────────────────────────────────────────────
 // Health check — kiểm tra server còn sống
 app.get('/', (req, res) => {
@@ -33,17 +40,25 @@ app.get('/', (req, res) => {
     message: '🌏 VietVoyage API đang chạy!',
     version: '1.0.0',
     endpoints: {
-      register: 'POST /api/auth/register',
-      login: 'POST /api/auth/login',
-      me: 'GET /api/auth/me  (cần JWT)',
-      adminUsers: 'GET /api/admin/users  (cần JWT + role admin)',
+      auth: 'POST /api/auth/register, /api/auth/login',
+      tours: 'GET, POST, PUT, DELETE /api/tours',
+      users: 'GET, PUT, PATCH /api/admin/users',
+      bookings: 'POST /api/bookings, GET /api/bookings/my, PATCH /api/bookings/:id/cancel',
+      adminBookings: 'GET /api/admin/bookings, GET /api/admin/bookings/stats, PATCH /api/admin/bookings/:id/status',
     },
   })
 })
 
-// Auth & Admin routes (tất cả đều đi qua /api/auth hoặc /api/admin)
+// Auth routes
 app.use('/api/auth', authRoutes)
-app.use('/api', authRoutes) // Route /api/admin/users cũng đặt ở đây
+// Tour routes
+app.use('/api/tours', tourRoutes)
+// Admin User routes
+app.use('/api/admin/users', userRoutes)
+// Booking routes (User)
+app.use('/api/bookings', bookingRoutes)
+// Admin Booking routes
+app.use('/api/admin/bookings', adminBookingRoutes)
 
 // ── 404 Handler ───────────────────────────────────────────────
 app.use((req, res) => {

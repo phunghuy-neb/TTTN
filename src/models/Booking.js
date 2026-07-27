@@ -1,0 +1,140 @@
+// ============================================================
+//  src/models/Booking.js
+//  Schema đơn đặt tour — khớp thiết kế Tuần 1 trong báo cáo
+// ============================================================
+import mongoose from 'mongoose'
+
+// ── Sub-schema: Thông tin liên hệ người đặt ─────────────────
+const ContactSchema = new mongoose.Schema(
+  {
+    name:  { type: String, required: true, trim: true },
+    phone: { type: String, required: true, trim: true },
+    email: { type: String, required: true, trim: true, lowercase: true },
+  },
+  { _id: false }
+)
+
+// ── Schema chính: Booking ─────────────────────────────────────
+const BookingSchema = new mongoose.Schema(
+  {
+    // Mã đơn hiển thị cho khách (VD: VV-1721234567-AB12)
+    bookingCode: {
+      type: String,
+      unique: true,
+    },
+
+    // Người đặt tour
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+
+    // Tour được đặt
+    tour: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Tour',
+      required: true,
+    },
+
+    // Snapshot tên tour tại thời điểm đặt (không bị ảnh hưởng nếu tour đổi tên sau)
+    tourName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    // Snapshot giá một khách tại thời điểm đặt
+    unitPrice: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    // Ngày khởi hành đã chọn
+    departureDate: {
+      type: Date,
+      required: true,
+    },
+
+    // Số lượng khách
+    guests: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+
+    // Tổng tiền = unitPrice × guests
+    totalPrice: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    // Thông tin liên hệ người đặt
+    contact: {
+      type: ContactSchema,
+      required: true,
+    },
+
+    // Trạng thái đơn
+    status: {
+      type: String,
+      enum: ['pending_payment', 'paid', 'cancelled', 'completed'],
+      default: 'pending_payment',
+    },
+
+    // Phương thức thanh toán
+    paymentMethod: {
+      type: String,
+      enum: ['vnpay', 'momo', 'later', null],
+      default: null,
+    },
+
+    // Mã giao dịch từ cổng thanh toán
+    txnRef: {
+      type: String,
+      default: null,
+    },
+
+    // Thời điểm thanh toán thành công
+    paidAt: {
+      type: Date,
+      default: null,
+    },
+
+    // Đơn đã được khách đánh giá tour hay chưa
+    reviewed: {
+      type: Boolean,
+      default: false,
+    },
+
+    // Ghi chú từ khách hàng (tuỳ chọn)
+    note: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+  },
+  {
+    timestamps: true,
+  }
+)
+
+// ── Index tối ưu truy vấn ─────────────────────────────────────
+BookingSchema.index({ user: 1, createdAt: -1 })
+BookingSchema.index({ tour: 1 })
+BookingSchema.index({ status: 1 })
+// bookingCode: unique index đã tạo tự động qua { unique: true } trong field definition
+
+// ── Pre-save: Tự động sinh bookingCode nếu chưa có ───────────
+BookingSchema.pre('save', function (next) {
+  if (!this.bookingCode) {
+    const timestamp = Date.now().toString()
+    const random = Math.random().toString(36).toUpperCase().slice(2, 6)
+    this.bookingCode = `VV-${timestamp.slice(-7)}-${random}`
+  }
+  next()
+})
+
+export default mongoose.model('Booking', BookingSchema)
