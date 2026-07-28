@@ -233,6 +233,10 @@ export const updateTour = async (req, res) => {
       runValidators: true,
     })
 
+    // findByIdAndUpdate KHÔNG kích hoạt hook pre('save'), nên searchText sẽ giữ
+    // giá trị cũ. Lưu lại một lần để hook chạy và tính lại searchText từ dữ liệu mới.
+    await updated.save()
+
     res.json({ success: true, message: 'Cập nhật tour thành công!', tour: updated })
   } catch (error) {
     if (error.name === 'ValidationError') {
