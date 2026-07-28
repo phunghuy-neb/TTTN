@@ -1,13 +1,26 @@
-// Tầng service tour — TẠM đọc từ dữ liệu mock trong ../data/tours.js.
-// Phiên sau chỉ thay phần THÂN hàm bằng lời gọi API thật qua api.js:
-// các tham số lọc/sắp/phân trang sẽ được truyền thẳng thành query string,
-// cấu trúc trả về { success, data, pagination } giữ nguyên để component không phải sửa.
-import { TOURS } from '../data/tours.js'
+// Tầng service tour — gọi API Tour THẬT của Backend (`/api/tours`) qua services/api.js.
+// Nhiệm vụ của tầng này: đổi tên tham số FE → tham số Backend khi gửi đi, và đổi cấu trúc
+// response Backend → cấu trúc §7 khi trả về, để component (TourList/Home/TourDetail) không
+// phải sửa một dòng nào khi nguồn dữ liệu đổi từ mock sang API thật.
+// Cấu trúc trả về giữ nguyên: { success, data, pagination } / { success, data } / { success: false, message }.
+//
+// HAI HẠN CHẾ ĐÃ BIẾT sau khi nối API thật (chi tiết ở comment trong từng hàm bên dưới):
+// 1. Tham số `deals` — Backend chưa có tham số lọc tour ưu đãi, FE tạm lọc phía client nên
+//    chỉ lọc được trong phạm vi trang đã phân trang, số liệu phân trang không chính xác.
+// 2. Tìm kiếm không dấu — Backend dùng $regex MongoDB (so khớp CÓ dấu) nên gõ không dấu
+//    không còn ra kết quả có dấu như thời mock.
+import { request } from './api.js'
 
-// Giả lập độ trễ mạng
+// Giả lập độ trễ mạng — giữ lại cho các nhánh còn mock ở tuần sau
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Bỏ dấu tiếng Việt + viết thường để so khớp không phân biệt dấu/hoa thường
+// Bỏ dấu tiếng Việt + viết thường để so khớp không phân biệt dấu/hoa thường.
+// KHÔNG còn dùng để lọc: việc tìm kiếm đã chuyển hẳn sang Backend ($regex trên name/location/tags).
+// HẠN CHẾ ĐÃ BIẾT: vì $regex của MongoDB so khớp CÓ dấu, hành vi "gõ không dấu vẫn ra kết quả
+// có dấu" (chạy đúng ở bản mock nhờ hàm này) HIỆN KHÔNG CÒN ĐÚNG sau khi nối API thật.
+// Muốn khôi phục cần một trong hai: (a) Backend đổi sang tìm kiếm full-text không phân biệt dấu
+// (collation strength 1 hoặc trường phụ đã bỏ dấu), hoặc (b) FE tải toàn bộ tour rồi tự lọc —
+// không làm ở phiên này vì tốn hiệu năng khi dữ liệu lớn.
 function boDau(str) {
   return String(str)
     .normalize('NFD')
@@ -17,7 +30,15 @@ function boDau(str) {
     .toLowerCase()
 }
 
-// Lấy danh sách tour: lọc → sắp xếp → phân trang (tất cả trên mock)
+// Map giá trị sắp xếp của FE → cú pháp sort của Mongoose mà Backend nhận.
+// Giá trị rỗng/không khớp → không gửi `sort`, để Backend dùng mặc định `-createdAt`.
+const SORT_MAP = {
+  'price-asc': 'basePrice',
+  'price-desc': '-basePrice',
+  'rating-desc': '-avgRating',
+}
+
+// Lấy danh sách tour từ Backend: dựng query string → gọi API → chuyển đổi về cấu trúc §7
 export async function getTours({
   page = 1,
   limit = 6,
@@ -29,63 +50,63 @@ export async function getTours({
   sort = '',
   deals = false,
 } = {}) {
-  await delay(300)
+  const params = new URLSearchParams()
+  params.set('page', String(page))
+  params.set('limit', String(limit))
 
-  // Chỉ hiển thị tour đang mở bán — lọc TRƯỚC mọi bộ lọc khác (UC-04 §13)
-  let list = TOURS.filter((t) => t.status === 'published')
+  // q (tên FE) → search (tên Backend). Chỉ thêm khi có giá trị để không gửi tham số rỗng.
+  if (q) params.set('search', q)
+  if (region) params.set('region', region)
 
-  // deals: chỉ giữ tour đang giảm giá (oldPrice > basePrice) — điều kiện ưu đãi UC-04 §13.
-  // Đặt ngay sau bước lọc published, trước các bộ lọc còn lại.
-  // Khi nối API thật, `deals` sẽ được truyền thành query param —
-  // cần thống nhất tên tham số này với Backend.
-  if (deals) list = list.filter((t) => t.oldPrice != null && t.oldPrice > t.basePrice)
-
-  // q: tìm không dấu trong name và location
-  if (q) {
-    const key = boDau(q)
-    list = list.filter((t) => boDau(t.name).includes(key) || boDau(t.location).includes(key))
-  }
-
-  // region: khớp chính xác
-  if (region) list = list.filter((t) => t.region === region)
-
-  // khoảng giá trên basePrice — 0 nghĩa là không giới hạn
+  // 0 nghĩa là không giới hạn — không gửi lên Backend
   const min = Number(minPrice) || 0
   const max = Number(maxPrice) || 0
-  if (min > 0) list = list.filter((t) => t.basePrice >= min)
-  if (max > 0) list = list.filter((t) => t.basePrice <= max)
+  if (min > 0) params.set('minPrice', String(min))
+  if (max > 0) params.set('maxPrice', String(max))
 
-  // days: '2-3' | '4-5' | '6+'
-  if (days === '2-3') list = list.filter((t) => t.days >= 2 && t.days <= 3)
-  else if (days === '4-5') list = list.filter((t) => t.days >= 4 && t.days <= 5)
-  else if (days === '6+') list = list.filter((t) => t.days >= 6)
+  if (days) params.set('days', days)
 
-  // sắp xếp — rỗng hoặc lạ thì giữ nguyên thứ tự gốc
-  if (sort === 'price-asc') list.sort((a, b) => a.basePrice - b.basePrice)
-  else if (sort === 'price-desc') list.sort((a, b) => b.basePrice - a.basePrice)
-  else if (sort === 'rating-desc') list.sort((a, b) => b.avgRating - a.avgRating)
+  const sortBE = SORT_MAP[sort]
+  if (sortBE) params.set('sort', sortBE)
 
-  // phân trang tính TRÊN KẾT QUẢ ĐÃ LỌC
-  const total = list.length
-  const totalPages = Math.ceil(total / limit)
-  const start = (page - 1) * limit
-  const data = list.slice(start, start + limit)
+  // KHÔNG gửi `status`: Backend tự lọc `status: 'published'` cho khách vãng lai (UC-04 §13).
+  // KHÔNG gửi `deals`: Backend không có tham số này — xử lý phía client bên dưới.
 
+  const res = await request(`/tours?${params.toString()}`)
+  if (res.success === false) return res
+
+  let data = res.tours
+  let total = res.total
+  let totalPages = res.totalPages
+
+  if (deals) {
+    // HẠN CHẾ ĐÃ BIẾT — Backend chưa hỗ trợ lọc tour ưu đãi (`oldPrice > basePrice`) ở tầng
+    // query, nên tạm lọc phía client. Cách này CHỈ ĐÚNG khi số tour ưu đãi nhỏ và nằm gọn
+    // trong trang đầu: ta chỉ lọc trên các bản ghi của MỘT trang đã được Backend phân trang,
+    // nên tour ưu đãi ở những trang sau sẽ bị bỏ sót, và `total`/`totalPages` tính lại dưới
+    // đây cũng chỉ phản ánh trang hiện tại chứ không phải toàn bộ dữ liệu.
+    // Muốn chính xác trên toàn bộ dữ liệu: cần Backend bổ sung tham số `deals`/`onSale` ở
+    // query string để việc lọc diễn ra trước khi phân trang.
+    data = data.filter((t) => t.oldPrice != null && t.oldPrice > t.basePrice)
+    total = data.length
+    totalPages = Math.ceil(total / limit)
+  }
+
+  // Backend trả `tours` + total/page/totalPages phẳng → gộp về cấu trúc §7.
+  // `limit` lấy từ tham số đầu vào vì response Backend không có trường này.
   return {
     success: true,
     data,
-    pagination: { page, limit, total, totalPages },
+    pagination: { page: res.page, limit, total, totalPages },
   }
 }
 
-// Lấy chi tiết một tour theo slug (định danh URL — D-01, §12.1)
+// Lấy chi tiết một tour theo slug (định danh URL — D-01, §12.1).
+// Backend nhận cả ObjectId lẫn slug, và tự trả 404 kèm { success: false, message } cho tour
+// không tồn tại hoặc archived → FE không cần kiểm `status` bằng tay nữa.
 export async function getTourBySlug(slug) {
-  await delay(300)
+  const res = await request(`/tours/${slug}`)
+  if (res.success === false) return res
 
-  const tour = TOURS.find((t) => t.slug === slug)
-  // Không tồn tại → không tìm thấy
-  if (!tour) return { success: false, message: 'Không tìm thấy tour.' }
-  // Tồn tại nhưng không mở bán (archived/draft) → hiển thị như không còn bán (UC-06)
-  if (tour.status !== 'published') return { success: false, message: 'Tour này hiện không còn được mở bán.' }
-  return { success: true, data: tour }
+  return { success: true, data: res.tour }
 }
