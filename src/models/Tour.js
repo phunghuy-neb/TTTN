@@ -125,6 +125,10 @@ const TourSchema = new mongoose.Schema(
     // Tags phân loại (VD: biển, núi, văn hóa, ...)
     tags: [{ type: String, trim: true }],
 
+    // Bản đã bỏ dấu của name + location + tags, phục vụ tìm kiếm không dấu.
+    // MongoDB không áp collation lên $regex nên phải lưu sẵn trường này.
+    searchText: { type: String, default: '', index: true },
+
     // Ảnh tour — mảng đường dẫn URL
     images: [{ type: String }],
 
@@ -173,7 +177,6 @@ const TourSchema = new mongoose.Schema(
 // ── Indexes tối ưu truy vấn (từ thiết kế Tuần 1) ─────────────
 TourSchema.index({ region: 1, basePrice: 1 })
 TourSchema.index({ status: 1 })
-TourSchema.index({ slug: 1 }, { unique: true })
 
 // ── Pre-save: Tự động sinh slug từ tên tour ───────────────────
 TourSchema.pre('save', function (next) {
@@ -188,6 +191,17 @@ TourSchema.pre('save', function (next) {
       .replace(/\s+/g, '-')
       .replace(/-+/g, '-')
   }
+
+  // Cập nhật searchText mỗi lần lưu.
+  // HẠN CHẾ: findByIdAndUpdate KHÔNG kích hoạt hook này, nên updateTour
+  // cần tự cập nhật hoặc chuyển sang .save().
+  this.searchText = [this.name, this.location, ...(this.tags || [])]
+    .join(' ')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+
   next()
 })
 

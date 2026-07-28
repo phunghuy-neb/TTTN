@@ -20,6 +20,9 @@ export const getTours = async (req, res) => {
       minPrice,
       maxPrice,
       days,
+      minDays,
+      maxDays,
+      deals,
       status = 'published', // Mặc định chỉ lấy tour published
       sort = '-createdAt',
       page = 1,
@@ -38,18 +41,49 @@ export const getTours = async (req, res) => {
     }
 
     if (region) filter.region = region
-    if (days) filter.days = Number(days)
+
+    // days: số chính xác. Query sai kiểu trả 400 thay vì để NaN chui xuống
+    // Mongoose gây CastError rồi rơi vào catch chung thành 500.
+    if (days) {
+      const soNgay = Number(days)
+      if (!Number.isInteger(soNgay) || soNgay < 1) {
+        return res.status(400).json({
+          success: false,
+          message: 'Tham so "days" phai la so nguyen duong. Dung minDays/maxDays neu muon loc theo khoang.',
+        })
+      }
+      filter.days = soNgay
+    }
+
+    // minDays/maxDays: lọc theo khoảng, phục vụ bộ lọc dải bên Frontend
+    if (minDays || maxDays) {
+      filter.days = {}
+      if (minDays) filter.days.$gte = Number(minDays)
+      if (maxDays) filter.days.$lte = Number(maxDays)
+    }
+
     if (minPrice || maxPrice) {
       filter.basePrice = {}
       if (minPrice) filter.basePrice.$gte = Number(minPrice)
       if (maxPrice) filter.basePrice.$lte = Number(maxPrice)
     }
     if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { location: { $regex: search, $options: 'i' } },
-        { tags: { $in: [new RegExp(search, 'i')] } },
-      ]
+      const tuKhoa = String(search)
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+      // Escape ký tự đặc biệt của regex — nếu không, người dùng gõ "(" hoặc "["
+      // sẽ tạo pattern không hợp lệ và Mongoose ném lỗi → 500.
+      const tuKhoaEscaped = tuKhoa.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      filter.searchText = { $regex: tuKhoaEscaped, $options: 'i' }
+    }
+
+    // deals: chỉ lấy tour đang giảm giá. Lọc ở tầng query để việc phân trang
+    // tính trên đúng tập kết quả — nếu lọc phía client sau khi phân trang thì
+    // tour ưu đãi ở các trang sau sẽ bị bỏ sót và total/totalPages sai.
+    if (deals === 'true' || deals === '1') {
+      filter.$expr = { $gt: ['$oldPrice', '$basePrice'] }
     }
 
     const pageNum = Math.max(1, Number(page))
@@ -61,7 +95,7 @@ export const getTours = async (req, res) => {
         .sort(sort)
         .skip(skip)
         .limit(limitNum)
-        .select('-itinerary -reviews -vectorSync'), // Bỏ field nặng ở danh sách
+        .select('-itinerary -reviews -vectorSync -searchText'), // Bỏ field nặng ở danh sách
       Tour.countDocuments(filter),
     ])
 
@@ -90,10 +124,14 @@ export const getTour = async (req, res) => {
     // Thử tìm theo ObjectId trước, nếu không hợp lệ thì tìm theo slug
     let tour
     if (idOrSlug.match(/^[0-9a-fA-F]{24}$/)) {
-      tour = await Tour.findById(idOrSlug).populate('createdBy', 'name email')
+      tour = await Tour.findById(idOrSlug)
+        .populate('createdBy', 'name email')
+        .populate('reviews.user', 'name avatar')
     }
     if (!tour) {
-      tour = await Tour.findOne({ slug: idOrSlug }).populate('createdBy', 'name email')
+      tour = await Tour.findOne({ slug: idOrSlug })
+        .populate('createdBy', 'name email')
+        .populate('reviews.user', 'name avatar')
     }
 
     if (!tour) {
