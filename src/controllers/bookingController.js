@@ -81,6 +81,14 @@ export const createBooking = async (req, res) => {
       })
     }
 
+    // Không cho đặt đợt đã khởi hành
+    if (new Date(departure.date) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Đợt khởi hành này đã qua. Vui lòng chọn đợt khác.',
+      })
+    }
+
     // 4. Kiểm tra đủ chỗ trống
     if (departure.availableSlots < guestCount) {
       return res.status(400).json({
@@ -93,26 +101,60 @@ export const createBooking = async (req, res) => {
     const unitPrice = departure.price
     const totalPrice = unitPrice * guestCount
 
-    // 6. Tạo đơn đặt tour (snapshot tourName và unitPrice)
-    const booking = await Booking.create({
-      user: req.user._id,
-      tour: tour._id,
-      tourName: tour.name,
-      unitPrice,
-      departureDate: depDate,
-      guests: guestCount,
-      totalPrice,
-      contact,
-      paymentMethod: paymentMethod || null,
-      note: note || '',
-      status: 'pending_payment',
-    })
-
-    // 7. Trừ số chỗ trống trong đợt khởi hành (cập nhật nguyên tử)
-    await Tour.updateOne(
-      { _id: tour._id, 'departures.date': departure.date },
+    // 6. Trừ chỗ TRƯỚC khi tạo đơn, bằng một cập nhật nguyên tử có điều kiện.
+    // Điều kiện $gte nằm ngay trong query nên hai request đồng thời không thể
+    // cùng trừ vào chỗ cuối — MongoDB chỉ cho một request khớp điều kiện.
+    const ketQuaTruCho = await Tour.updateOne(
+      {
+        _id: tour._id,
+        departures: {
+          $elemMatch: { date: departure.date, availableSlots: { $gte: guestCount } },
+        },
+      },
       { $inc: { 'departures.$.availableSlots': -guestCount } }
     )
+
+    if (ketQuaTruCho.modifiedCount === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Đợt khởi hành vừa hết chỗ. Vui lòng chọn đợt khác hoặc giảm số khách.',
+      })
+    }
+
+    // 7. Tạo đơn đặt tour (snapshot tourName và unitPrice)
+    let booking
+    try {
+      // bookingCode sinh từ 7 số cuối timestamp + 4 ký tự ngẫu nhiên nên vẫn có
+      // xác suất trùng rất nhỏ — gặp lỗi trùng khóa E11000 thì thử lại tối đa 3 lần
+      for (let lanThu = 1; ; lanThu++) {
+        try {
+          booking = await Booking.create({
+            user: req.user._id,
+            tour: tour._id,
+            tourName: tour.name,
+            unitPrice,
+            departureDate: depDate,
+            guests: guestCount,
+            totalPrice,
+            contact,
+            paymentMethod: paymentMethod || null,
+            note: note || '',
+            status: 'pending_payment',
+          })
+          break
+        } catch (err) {
+          if (err.code === 11000 && lanThu < 3) continue
+          throw err
+        }
+      }
+    } catch (err) {
+      // Tạo đơn hỏng thì phải trả chỗ lại, nếu không số chỗ bị hụt vĩnh viễn
+      await Tour.updateOne(
+        { _id: tour._id, 'departures.date': departure.date },
+        { $inc: { 'departures.$.availableSlots': guestCount } }
+      )
+      throw err
+    }
 
     res.status(201).json({
       success: true,
@@ -143,7 +185,18 @@ export const getMyBookings = async (req, res) => {
     } = req.query
 
     const filter = { user: req.user._id }
-    if (status) filter.status = status
+
+    // Chặn giá trị status lạ — trả 400 thay vì âm thầm trả danh sách rỗng
+    const TRANG_THAI_HOP_LE = ['pending_payment', 'paid', 'cancelled', 'completed']
+    if (status) {
+      if (!TRANG_THAI_HOP_LE.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: `Trạng thái "${status}" không hợp lệ.`,
+        })
+      }
+      filter.status = status
+    }
 
     const pageNum = Math.max(1, Number(page))
     const limitNum = Math.min(50, Math.max(1, Number(limit)))
@@ -227,20 +280,45 @@ export const cancelBooking = async (req, res) => {
       })
     }
 
-    // Cập nhật trạng thái đơn
-    booking.status = 'cancelled'
-    await booking.save()
-
-    // Hoàn lại số chỗ trống vào đợt khởi hành
-    await Tour.updateOne(
-      { _id: booking.tour, 'departures.date': booking.departureDate },
-      { $inc: { 'departures.$.availableSlots': booking.guests } }
+    // Đổi trạng thái bằng cập nhật có điều kiện: chỉ request đầu tiên khớp
+    // status = pending_payment mới thành công, request thứ hai trả về null.
+    const daHuy = await Booking.findOneAndUpdate(
+      { _id: booking._id, status: 'pending_payment' },
+      { $set: { status: 'cancelled' } },
+      { new: true }
     )
+
+    if (!daHuy) {
+      return res.status(400).json({
+        success: false,
+        message: 'Đơn này đã được xử lý bởi một thao tác khác. Vui lòng tải lại trang.',
+      })
+    }
+
+    // Hoàn lại số chỗ trống vào đợt khởi hành. So khớp theo NGÀY thay vì theo
+    // mốc thời gian tuyệt đối, tránh trượt khi giờ/phút/giây lệch nhau giữa
+    // lúc tạo đơn và lúc hủy.
+    const dauNgay = new Date(daHuy.departureDate)
+    dauNgay.setHours(0, 0, 0, 0)
+    const cuoiNgay = new Date(daHuy.departureDate)
+    cuoiNgay.setHours(23, 59, 59, 999)
+
+    const ketQuaHoan = await Tour.updateOne(
+      {
+        _id: daHuy.tour,
+        departures: { $elemMatch: { date: { $gte: dauNgay, $lte: cuoiNgay } } },
+      },
+      { $inc: { 'departures.$.availableSlots': daHuy.guests } }
+    )
+
+    if (ketQuaHoan.modifiedCount === 0) {
+      console.error('[cancelBooking] Không hoàn được chỗ cho đơn', daHuy.bookingCode)
+    }
 
     res.json({
       success: true,
-      message: `Đơn ${booking.bookingCode} đã được hủy thành công.`,
-      booking: formatBooking(booking),
+      message: `Đơn ${daHuy.bookingCode} đã được hủy thành công.`,
+      booking: formatBooking(daHuy),
     })
   } catch (error) {
     console.error('[cancelBooking]', error)
@@ -337,10 +415,19 @@ export const updateBookingStatus = async (req, res) => {
       if (txnRef) booking.txnRef = txnRef
     }
 
-    // Nếu Admin hủy một đơn đang pending → hoàn lại chỗ trống
+    // Nếu Admin hủy một đơn đang pending → hoàn lại chỗ trống.
+    // So khớp theo NGÀY như cancelBooking, tránh trượt khi giờ/phút/giây lệch.
     if (status === 'cancelled' && prevStatus === 'pending_payment') {
+      const dauNgay = new Date(booking.departureDate)
+      dauNgay.setHours(0, 0, 0, 0)
+      const cuoiNgay = new Date(booking.departureDate)
+      cuoiNgay.setHours(23, 59, 59, 999)
+
       await Tour.updateOne(
-        { _id: booking.tour, 'departures.date': booking.departureDate },
+        {
+          _id: booking.tour,
+          departures: { $elemMatch: { date: { $gte: dauNgay, $lte: cuoiNgay } } },
+        },
         { $inc: { 'departures.$.availableSlots': booking.guests } }
       )
     }
