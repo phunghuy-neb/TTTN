@@ -33,6 +33,16 @@ function DetailSkeleton() {
   )
 }
 
+// Tên người đánh giá chịu được 3 dạng dữ liệu:
+//  - object đã populate  → lấy .name
+//  - chuỗi 24 ký tự hex  → ObjectId thô chưa populate, không có tên để hiện
+//  - chuỗi thường        → tên người (dữ liệu mock thời Tuần 2)
+function tenNguoiDanhGia(user) {
+  if (user && typeof user === 'object') return user.name || 'Khách hàng'
+  if (typeof user === 'string' && /^[0-9a-fA-F]{24}$/.test(user)) return 'Khách hàng'
+  return user || 'Khách hàng'
+}
+
 // Trang chi tiết tour (UC-06) — lấy theo slug qua tầng service
 export default function TourDetail() {
   const { slug } = useParams()
@@ -252,7 +262,7 @@ export default function TourDetail() {
                 {tour.reviews.map((rv, i) => (
                   <article key={i} className="card-surface p-5">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold text-ink">{rv.user}</span>
+                      <span className="font-semibold text-ink">{tenNguoiDanhGia(rv.user)}</span>
                       <span className="text-[13px] text-muted">{formatDate(rv.createdAt)}</span>
                     </div>
                     <div className="mt-1 text-[14px] text-gold">

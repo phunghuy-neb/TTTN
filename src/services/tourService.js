@@ -64,7 +64,12 @@ export async function getTours({
   if (min > 0) params.set('minPrice', String(min))
   if (max > 0) params.set('maxPrice', String(max))
 
-  if (days) params.set('days', days)
+  // CHẮN TẠM: TourFilters gửi dải ("2-3" | "4-5" | "6+") nhưng Backend xử lý bằng
+  // Number(days) → NaN → CastError → 500. Chỉ gửi khi là số thuần để trang không vỡ;
+  // bộ lọc số ngày tạm vô hiệu với các lựa chọn dải.
+  // TODO: bỏ chắn này khi Backend bổ sung minDays/maxDays, rồi map
+  // "2-3" → minDays=2&maxDays=3, "4-5" → minDays=4&maxDays=5, "6+" → minDays=6.
+  if (days && /^\d+$/.test(days)) params.set('days', days)
 
   const sortBE = SORT_MAP[sort]
   if (sortBE) params.set('sort', sortBE)

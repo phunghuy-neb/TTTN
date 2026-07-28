@@ -36,7 +36,7 @@ export default function TourList() {
       const res = await getTours({ page, q, region, minPrice, maxPrice, days, sort })
       if (id !== requestId.current) return // đã có request mới hơn — bỏ kết quả này
       if (!res.success) {
-        setError('Không tải được danh sách tour.')
+        setError(res.message || 'Không tải được danh sách tour.')
         return
       }
       setTours(res.data)
