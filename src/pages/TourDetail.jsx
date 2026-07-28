@@ -1,18 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useNavigate, useLocation } from 'react-router-dom'
 import { getTourBySlug } from '../services/tourService.js'
-import { formatPrice } from '../utils/format.js'
-
-// Ngày dạng dd/MM/yyyy theo chuẩn vi-VN (§14) — ép 2 chữ số, mặc định của Intl là 14/8/2026.
-// timeZone UTC vì dữ liệu là ngày lịch thuần ('2026-08-21'), new Date() hiểu là nửa đêm UTC:
-// để Intl đọc theo giờ máy thì máy ở phía tây UTC sẽ hiển thị lùi một ngày.
-const dateFormatter = new Intl.DateTimeFormat('vi-VN', {
-  day: '2-digit',
-  month: '2-digit',
-  year: 'numeric',
-  timeZone: 'UTC'
-})
-const formatDate = (iso) => dateFormatter.format(new Date(iso))
+import { formatPrice, formatDate } from '../utils/format.js'
+import { useAuth } from '../context/AuthContext.jsx'
 
 // Khung xương lúc đang tải
 function DetailSkeleton() {
@@ -46,11 +36,19 @@ function tenNguoiDanhGia(user) {
 // Trang chi tiết tour (UC-06) — lấy theo slug qua tầng service
 export default function TourDetail() {
   const { slug } = useParams()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const { user } = useAuth()
   const [tour, setTour] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('') // service trả success:false — tour không xem được
   const [error, setError] = useState('') // lỗi tải, cho phép thử lại
   const [activeImage, setActiveImage] = useState(0)
+
+  // Hộp đặt tour (UC-08): đợt khởi hành đang chọn (chuỗi ISO từ API) + số khách đang gõ.
+  // Giữ số khách dạng chuỗi để ô nhập không nhảy giá trị khi người dùng xóa tạm.
+  const [ngayChon, setNgayChon] = useState('')
+  const [soKhachText, setSoKhachText] = useState('1')
 
   // Đánh số mỗi lần gọi: đổi slug nhanh khiến nhiều request cùng bay,
   // request cũ về sau sẽ ghi đè tour mới nếu không bỏ qua kết quả lỗi thời.
@@ -72,6 +70,9 @@ export default function TourDetail() {
       }
       setTour(res.data)
       setActiveImage(0)
+      // Đổi tour → bỏ lựa chọn cũ của hộp đặt tour
+      setNgayChon('')
+      setSoKhachText('1')
     } catch {
       if (id !== requestId.current) return
       setTour(null)
@@ -85,6 +86,41 @@ export default function TourDetail() {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug])
+
+  // Đợt khởi hành đang chọn + kiểm tra số khách so với số chỗ còn của đợt đó
+  const dotChon = tour?.departures?.find((d) => d.date === ngayChon) || null
+  const soKhach = Number(soKhachText)
+  let loiSoKhach = ''
+  if (!Number.isInteger(soKhach) || soKhach < 1) {
+    loiSoKhach = 'Số khách phải là số nguyên từ 1 trở lên.'
+  } else if (dotChon && soKhach > dotChon.availableSlots) {
+    loiSoKhach = `Đợt này chỉ còn ${dotChon.availableSlots} chỗ. Vui lòng giảm số khách hoặc chọn đợt khác.`
+  }
+  // Tổng tiền = giá đợt × số khách — chỉ tính khi đã chọn đợt và số khách hợp lệ
+  const tongTien = dotChon && !loiSoKhach ? dotChon.price * soKhach : null
+
+  // Bấm "Đặt tour ngay": chưa đăng nhập → sang /login kèm from để quay lại trang này;
+  // đã đăng nhập → mang dữ liệu đơn sang trang xác nhận /checkout
+  function datTour() {
+    if (!dotChon || loiSoKhach) return
+    if (!user) {
+      navigate('/login', { state: { from: location } })
+      return
+    }
+    navigate('/checkout', {
+      state: {
+        tourId: tour._id,
+        slug: tour.slug,
+        tourName: tour.name,
+        // Giữ nguyên chuỗi ISO từ API — Backend khớp đợt và hoàn chỗ theo đúng giá trị này
+        departureDate: dotChon.date,
+        guests: soKhach,
+        unitPrice: dotChon.price,
+        totalPrice: dotChon.price * soKhach,
+        image: tour.images?.[0] || '',
+      },
+    })
+  }
 
   return (
     <div className="wrap py-[42px]">
@@ -170,21 +206,94 @@ export default function TourDetail() {
             </span>
           </div>
 
-          {/* (d) Giá + nút đặt tour */}
-          <div className="card-surface mt-6 flex flex-wrap items-center justify-between gap-4 p-5">
-            <div className="flex items-baseline gap-3">
-              <span className="font-heading text-[26px] font-semibold text-coralD">
-                {formatPrice(tour.basePrice)}
+          {/* (d) Hộp đặt tour (UC-08) — chọn đợt khởi hành, nhập số khách, tổng tiền tự cập nhật */}
+          <div className="card-surface mt-6 p-5">
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
+              <div className="flex items-baseline gap-3">
+                <span className="font-heading text-[26px] font-semibold text-coralD">
+                  {formatPrice(dotChon ? dotChon.price : tour.basePrice)}
+                </span>
+                {!dotChon && tour.oldPrice != null && (
+                  <span className="text-[15px] text-muted line-through">{formatPrice(tour.oldPrice)}</span>
+                )}
+                <span className="text-[13.5px] text-muted">/ khách</span>
+              </div>
+              <span className="text-[13.5px] text-muted">
+                {dotChon ? `Đợt khởi hành ${formatDate(dotChon.date)}` : 'Giá thay đổi theo đợt khởi hành'}
               </span>
-              {tour.oldPrice != null && (
-                <span className="text-[15px] text-muted line-through">{formatPrice(tour.oldPrice)}</span>
-              )}
-              <span className="text-[13.5px] text-muted">/ khách</span>
             </div>
-            {/* Chưa gắn hành động — luồng đặt tour (UC-08) thuộc Tuần 4 */}
-            <button type="button" className="btn-coral">
-              Đặt tour ngay
-            </button>
+
+            {/* Danh sách đợt khởi hành — đợt hết chỗ bị vô hiệu hóa */}
+            <p className="field-label">Chọn đợt khởi hành</p>
+            {tour.departures?.length > 0 ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {tour.departures.map((dep) => {
+                  const hetCho = dep.availableSlots <= 0
+                  const dangChon = dep.date === ngayChon
+                  return (
+                    <button
+                      key={dep.date}
+                      type="button"
+                      disabled={hetCho}
+                      onClick={() => setNgayChon(dep.date)}
+                      className={`rounded-card border-[1.5px] p-4 text-left transition ${
+                        dangChon ? 'border-teal bg-teal/5' : 'border-line bg-white hover:border-jade'
+                      } ${hetCho ? 'cursor-not-allowed opacity-60 hover:border-line' : ''}`}
+                    >
+                      <span className="block font-heading text-[16px] font-semibold text-ink">
+                        {formatDate(dep.date)}
+                      </span>
+                      <span className="mt-1 block font-semibold text-coralD">{formatPrice(dep.price)}</span>
+                      {hetCho ? (
+                        <span className="mt-2 inline-block rounded-pill bg-sand px-3 py-1 text-[13px] font-semibold text-muted">
+                          Hết chỗ
+                        </span>
+                      ) : (
+                        <span className="mt-2 inline-block rounded-pill bg-jade/10 px-3 py-1 text-[13px] font-semibold text-jade">
+                          Còn {dep.availableSlots} chỗ
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-[14.5px] text-muted">Tour chưa mở đợt khởi hành nào.</p>
+            )}
+
+            {/* Số khách + tổng tiền + nút đặt */}
+            <div className="mt-4 flex flex-wrap items-end gap-x-6 gap-y-3">
+              <div className="w-full max-w-[180px]">
+                <label htmlFor="soKhach" className="field-label !mt-0">Số khách</label>
+                <input
+                  id="soKhach"
+                  type="number"
+                  min="1"
+                  max={dotChon ? dotChon.availableSlots : undefined}
+                  value={soKhachText}
+                  onChange={(e) => setSoKhachText(e.target.value)}
+                  className={`field-input ${loiSoKhach ? 'field-input--error' : ''}`}
+                />
+              </div>
+              <div className="flex-1">
+                <p className="text-[13px] font-semibold text-muted">Tổng tiền</p>
+                <p className="font-heading text-[24px] font-semibold text-coralD">
+                  {tongTien != null ? formatPrice(tongTien) : '—'}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn-coral"
+                disabled={!dotChon || !!loiSoKhach}
+                onClick={datTour}
+              >
+                Đặt tour ngay
+              </button>
+            </div>
+            {loiSoKhach && <div className="field-error">{loiSoKhach}</div>}
+            {!dotChon && tour.departures?.length > 0 && (
+              <p className="mt-2 text-[13px] text-muted">Chọn một đợt khởi hành để đặt tour.</p>
+            )}
           </div>
 
           {/* (e) Mô tả */}
@@ -215,36 +324,7 @@ export default function TourDetail() {
             </div>
           </section>
 
-          {/* (g) Đợt khởi hành */}
-          <section className="mt-9">
-            <h2 className="font-heading text-[21px] font-semibold text-ink">Đợt khởi hành</h2>
-            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {tour.departures?.map((dep) => {
-                const soldOut = dep.availableSlots <= 0
-                return (
-                  <div
-                    key={dep.date}
-                    className={`card-surface p-5 ${soldOut ? 'opacity-60' : ''}`}
-                  >
-                    <p className="text-[13px] text-muted">Ngày khởi hành</p>
-                    <p className="mt-1 font-heading text-[18px] font-semibold text-ink">
-                      {formatDate(dep.date)}
-                    </p>
-                    <p className="mt-2 font-semibold text-coralD">{formatPrice(dep.price)}</p>
-                    {soldOut ? (
-                      <span className="mt-3 inline-block rounded-pill bg-sand px-3 py-1 text-[13px] font-semibold text-muted">
-                        Hết chỗ
-                      </span>
-                    ) : (
-                      <span className="mt-3 inline-block rounded-pill bg-jade/10 px-3 py-1 text-[13px] font-semibold text-jade">
-                        Còn {dep.availableSlots} chỗ
-                      </span>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </section>
+          {/* (g) Đợt khởi hành — đã gộp vào hộp đặt tour (d) để chọn trực tiếp, không hiển thị trùng */}
 
           {/* (h) Chính sách hủy */}
           <section className="mt-9">
