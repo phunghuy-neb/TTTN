@@ -13,6 +13,7 @@ import bookingRoutes from './src/routes/bookingRoutes.js'
 import adminBookingRoutes from './src/routes/adminBookingRoutes.js'
 import adminTourRoutes from './src/routes/adminTourRoutes.js'
 import adminRoutes from './src/routes/adminRoutes.js'
+import chatRoutes from './src/routes/chatRoutes.js'
 
 // ── Kết nối MongoDB ───────────────────────────────────────────
 connectDB()
@@ -82,6 +83,8 @@ app.use('/api/tours', tourRoutes)
 app.use('/api/admin/users', userRoutes)
 // Booking routes (User)
 app.use('/api/bookings', bookingRoutes)
+// Chat với trợ lý AI (UC-07) — stub khi chưa set AI_SERVICE_URL
+app.use('/api/chat', chatRoutes)
 // Admin Booking routes
 app.use('/api/admin/bookings', adminBookingRoutes)
 // Admin Tour routes (Batch 3 — merge departures theo _id, chống đơn mồ côi)

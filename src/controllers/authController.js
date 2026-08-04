@@ -171,6 +171,91 @@ export const getMe = async (req, res) => {
 }
 
 // ============================================================
+//  @route   PUT /api/auth/profile
+//  @desc    Tự cập nhật họ tên / SĐT của chính mình
+//  @access  Private
+// ============================================================
+export const updateProfile = async (req, res) => {
+  try {
+    const { name, phone } = req.body
+
+    if (name !== undefined && !String(name).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Họ tên không được để trống.',
+        code: 'VALIDATION_ERROR',
+      })
+    }
+    if (phone !== undefined && phone !== '' && !/^0\d{9}$/.test(String(phone).trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Số điện thoại không hợp lệ (10 chữ số, bắt đầu bằng 0).',
+        code: 'VALIDATION_ERROR',
+      })
+    }
+
+    const user = await User.findById(req.user._id)
+    if (name !== undefined) user.name = String(name).trim()
+    if (phone !== undefined) user.phone = String(phone).trim()
+    await user.save()
+
+    res.json({ success: true, message: 'Cập nhật hồ sơ thành công!', user: formatUser(user) })
+  } catch (error) {
+    if (error.name === 'ValidationError') {
+      const msg = Object.values(error.errors).map((e) => e.message)[0]
+      return res.status(400).json({ success: false, message: msg, code: 'VALIDATION_ERROR' })
+    }
+    console.error('[updateProfile]', error)
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
+  }
+}
+
+// ============================================================
+//  @route   PATCH /api/auth/password
+//  @desc    Tự đổi mật khẩu — phải nhập đúng mật khẩu cũ
+//  @access  Private
+// ============================================================
+export const changePassword = async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body
+
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Vui lòng nhập mật khẩu cũ và mật khẩu mới.',
+        code: 'VALIDATION_ERROR',
+      })
+    }
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mật khẩu mới tối thiểu 6 ký tự.',
+        code: 'VALIDATION_ERROR',
+      })
+    }
+
+    // Schema để select:false nên phải xin password tường minh
+    const user = await User.findById(req.user._id).select('+password')
+    const dungMatKhauCu = await user.matchPassword(oldPassword)
+    if (!dungMatKhauCu) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mật khẩu cũ không đúng.',
+        code: 'WRONG_PASSWORD',
+      })
+    }
+
+    user.password = newPassword // pre-save hook tự hash
+    await user.save()
+
+    res.json({ success: true, message: 'Đổi mật khẩu thành công!' })
+  } catch (error) {
+    console.error('[changePassword]', error)
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
+  }
+}
+
+// ============================================================
 //  @route   GET /api/admin/users
 //  @desc    Lấy danh sách toàn bộ user (Admin only)
 //  @access  Private — chỉ role 'admin'
