@@ -17,6 +17,8 @@ import Bookings from './pages/Bookings.jsx'
 import Dashboard from './pages/admin/Dashboard.jsx'
 import AdminTours from './pages/admin/Tours.jsx'
 import AdminTourForm from './pages/admin/TourForm.jsx'
+import AdminBookings from './pages/admin/Bookings.jsx'
+import AdminUsers from './pages/admin/Users.jsx'
 import Forbidden from './pages/Forbidden.jsx'
 import NotFound from './pages/NotFound.jsx'
 
@@ -57,6 +59,8 @@ export default function App() {
                 <Route path="tours" element={<AdminTours />} />
                 <Route path="tours/new" element={<AdminTourForm />} />
                 <Route path="tours/:id/edit" element={<AdminTourForm />} />
+                <Route path="bookings" element={<AdminBookings />} />
+                <Route path="users" element={<AdminUsers />} />
                 <Route path="*" element={<NotFound />} />
               </Route>
             </Route>

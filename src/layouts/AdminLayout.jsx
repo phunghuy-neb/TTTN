@@ -8,10 +8,9 @@ import { useAuth } from '../context/AuthContext.jsx'
 const NAV = [
   { to: '/admin', label: 'Dashboard', icon: '▦', end: true },
   { to: '/admin/tours', label: 'Quản lý tour', icon: '🗺', end: false },
+  { to: '/admin/bookings', label: 'Quản lý đơn đặt', icon: '🧾', end: false },
+  { to: '/admin/users', label: 'Quản lý người dùng', icon: '👥', end: false },
 ]
-
-// Các khu sẽ làm ở batch sau — hiển thị mờ, không bấm được
-const SAP_CO = ['Quản lý đơn đặt', 'Quản lý người dùng']
 
 // Nhãn breadcrumb theo path — khớp exact trước, rồi tới pattern
 function tenBreadcrumb(pathname) {
@@ -19,6 +18,8 @@ function tenBreadcrumb(pathname) {
   if (pathname === '/admin/tours') return 'Quản lý tour'
   if (pathname === '/admin/tours/new') return 'Thêm tour'
   if (/^\/admin\/tours\/[^/]+\/edit$/.test(pathname)) return 'Sửa tour'
+  if (pathname === '/admin/bookings') return 'Quản lý đơn đặt'
+  if (pathname === '/admin/users') return 'Quản lý người dùng'
   return 'Không tìm thấy'
 }
 
@@ -64,22 +65,6 @@ export default function AdminLayout() {
             </NavLink>
           ))}
         </nav>
-
-        <div className="mt-2 px-3">
-          <p className="px-3.5 text-[11.5px] font-bold uppercase tracking-[0.14em] text-muted/70">
-            Sắp ra mắt
-          </p>
-          <div className="mt-1 flex flex-col">
-            {SAP_CO.map((label) => (
-              <span
-                key={label}
-                className="cursor-not-allowed px-3.5 py-2 text-[14px] text-muted/50"
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-        </div>
 
         <div className="mt-auto border-t border-line p-3">
           <Link

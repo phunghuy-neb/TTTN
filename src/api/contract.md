@@ -23,6 +23,9 @@
 | `DEPARTURE_HAS_BOOKINGS` | Xóa đợt còn đơn active — TỪ CHỐI CẢ request PUT, DB không đổi (409) |
 | `SLOTS_BELOW_BOOKED` | Hạ totalSlots xuống dưới số chỗ đang được giữ (409) |
 | `TOUR_HAS_BOOKINGS` | Ẩn tour còn đơn active (409) |
+| `INVALID_STATUS_TRANSITION` | Đổi trạng thái đơn sai máy trạng thái, kèm `currentStatus` (409) |
+| `CANNOT_LOCK_SELF` | Admin tự khóa tài khoản chính mình (409) |
+| `CANNOT_DEMOTE_SELF` | Admin tự hạ quyền chính mình — chặn cả PATCH /role lẫn PUT (409) |
 | `UPLOAD_ERROR` | File upload sai định dạng/quá 5MB (400) |
 | `NOT_FOUND` | Không có route/tài nguyên (404) |
 | `BAD_REQUEST` / `UNAUTHORIZED` / `CONFLICT` / `REQUEST_ERROR` | Code mặc định bơm theo status khi controller chưa đặt code riêng |
@@ -91,14 +94,18 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 
 | Method | Path | Body/Query | Response 2xx |
 |---|---|---|---|
-| GET | `/admin/stats` | — | `200 { success, stats: { totalTours, totalBookings, totalUsers, revenue } }` — đếm/aggregate thật; `revenue` = Σ`totalPrice` của đơn `paid` + `completed` |
-| GET | `/admin/users` | `?search&role&isActive&sort&page&limit` | `200 { success, total, page, totalPages, users[] }` |
+| GET | `/admin/stats` | — | `200 { success, stats }` — aggregate thật: `totalTours, totalBookings, totalUsers, revenue` (Σ đơn `paid`+`completed`) + **Batch 4**: `monthlyRevenue[{year,month,revenue,count}]` (6 tháng theo ngày đặt), `byStatus{status:n}`, `topTours[{tourId,tourName,soDon,doanhThu}]` (top 5, bỏ đơn hủy), `latestBookings[]` (5 đơn mới, populate user) |
+| GET | `/admin/users` | `?search&role&isActive&sort&page&limit` | `200 { success, total, page, totalPages, users[] }` — mỗi user kèm `soDon` (tổng đơn) |
 | GET | `/admin/users/:id` | — | `200 { success, user }` |
-| PUT | `/admin/users/:id` | `{ name?, phone?, avatar?, role? }` | `200 { success, message, user }` |
-| PATCH | `/admin/users/:id/lock` | — | `200 { success, message, user }` (toggle `isActive`; không tự khóa chính mình) |
-| GET | `/admin/bookings` | `?status&tourId&userId&search&sort&page&limit` | `200 { success, total, page, totalPages, bookings[] }` |
-| GET | `/admin/bookings/stats` | — | `200 { success, stats: { totalBookings, pendingCount, totalRevenue, byStatus, monthlyRevenue } }` (chỉ tính đơn `paid`) |
-| PATCH | `/admin/bookings/:id/status` | `{ status, txnRef?, paymentMethod? }` | `200 { success, message, booking }` — hủy đơn pending thì hoàn chỗ |
+| PUT | `/admin/users/:id` | `{ name?, phone?, avatar?, role? }` | `200 { success, message, user }` — tự hạ quyền → 409 `CANNOT_DEMOTE_SELF` |
+| PATCH | `/admin/users/:id/lock` | — | `200 { success, message, user }` (toggle `isActive`) — tự khóa → 409 `CANNOT_LOCK_SELF`; user bị khóa login nhận 403 `ACCOUNT_LOCKED` |
+| PATCH | `/admin/users/:id/role` | `{ role: 'customer'\|'admin' }` | `200 { success, message, user }` — tự hạ quyền → 409 `CANNOT_DEMOTE_SELF` |
+| GET | `/admin/bookings` | `?status&tourId&userId&search&dateFrom&dateTo&sort&page&limit` — `search` khớp mã đơn/tên tour/tên/email/SĐT khách; `dateFrom/dateTo` là khoảng **ngày đặt** (createdAt, trọn ngày) | `200 { success, total, page, totalPages, bookings[] }` — booking kèm `departureId`, `departureDate`, `statusHistory` |
+| GET | `/admin/bookings/:id` | — | `200 { success, booking }` — populate user + tour, kèm `statusHistory` |
+| GET | `/admin/bookings/stats` | — | `200 { success, stats }` (endpoint cũ, chỉ tính đơn `paid` — dashboard dùng `/admin/stats`) |
+| PATCH | `/admin/bookings/:id/status` | `{ status, txnRef?, paymentMethod? }` | `200 { success, message, booking }` | 
+
+**Máy trạng thái đơn (Batch 4)** — `PATCH /admin/bookings/:id/status` chỉ chấp nhận: `pending_payment → paid | cancelled`; `paid → completed | cancelled`; `completed`/`cancelled` là trạng thái cuối. Sai luồng → **409 `INVALID_STATUS_TRANSITION`** kèm `currentStatus`, DB không đổi. Flip trạng thái có điều kiện (2 admin bấm đồng thời → người sau 409, không hoàn chỗ 2 lần). Chuyển sang `cancelled` hoàn chỗ **nguyên tử theo `departureId`**; đơn mồ côi (departureId null) bỏ qua hoàn chỗ + ghi log. Mỗi lần đổi ghi thêm `statusHistory: [{from, to, byUserId, at}]` (user tự hủy cũng ghi).
 
 Lỗi chung khu admin: 401 `AUTH_REQUIRED`/`TOKEN_INVALID` (không token/token hỏng), 403 `ADMIN_ONLY` (đăng nhập nhưng không phải admin).
 
