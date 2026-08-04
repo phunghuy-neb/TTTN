@@ -17,6 +17,9 @@
 | `FORBIDDEN` | Không đủ quyền (403, từ `authorize()` cũ) |
 | `EMAIL_TAKEN` | Email đã tồn tại khi đăng ký (400) |
 | `VALIDATION_ERROR` | Dữ liệu đầu vào không hợp lệ (400) |
+| `DEPARTURE_NOT_FOUND` | departureId không có trong tour (400) |
+| `DEPARTURE_PAST` | Đợt khởi hành đã qua (400) |
+| `SLOT_UNAVAILABLE` | Đợt không còn đủ chỗ — trừ chỗ nguyên tử thất bại (409) |
 | `UPLOAD_ERROR` | File upload sai định dạng/quá 5MB (400) |
 | `NOT_FOUND` | Không có route/tài nguyên (404) |
 | `BAD_REQUEST` / `UNAUTHORIZED` / `CONFLICT` / `REQUEST_ERROR` | Code mặc định bơm theo status khi controller chưa đặt code riêng |
@@ -47,7 +50,7 @@
 \* Có token admin thì thấy cả tour `draft`/`archived`; khách vãng lai chỉ thấy `published`.
 
 `tour` = `{ _id, name, slug, region, location, days, description, basePrice, oldPrice, images[], avgRating, itinerary[], departures[], reviews[], cancellationPolicy, status, createdBy, searchText }`.
-`departures[]` = `{ date (ISO), availableSlots, price }` — **chưa có `_id` dùng làm định danh, xem PENDING bên dưới**.
+`departures[]` = `{ _id, date (ISO), totalSlots, availableSlots, price }` — **`_id` là khóa ổn định của đợt; FE chọn đợt và đặt tour bằng `_id` này** (xem RESOLVED bên dưới).
 
 ## Tours (admin) — `protect + authorize('admin')`
 
@@ -62,12 +65,12 @@
 
 | Method | Path | Body/Query | Response 2xx | Lỗi |
 |---|---|---|---|---|
-| POST | `/bookings` | `{ tourId, departureDate, guests, contact{name,phone,email}, paymentMethod, note }` | `201 { success, message, booking }` | 400 (thiếu field/hết chỗ/đợt đã qua), 404 tour |
+| POST | `/bookings` | `{ tourId, departureId, guests, contact{name,phone,email}, paymentMethod, note }` | `201 { success, message, booking }` | 400 `VALIDATION_ERROR`/`DEPARTURE_NOT_FOUND`/`DEPARTURE_PAST`, 404 tour, **409 `SLOT_UNAVAILABLE`** |
 | GET | `/bookings/my` | `?status&page&limit` | `200 { success, total, page, totalPages, bookings[] }` | 400 status lạ |
 | GET | `/bookings/:id` | — | `200 { success, booking }` | 403 (không phải chủ đơn/admin), 404 |
 | PATCH | `/bookings/:id/cancel` | — | `200 { success, message, booking }` — hoàn chỗ về đợt | 400 (không phải pending_payment), 403, 404 |
 
-`booking.status` ∈ `pending_payment | paid | cancelled | completed`. `paymentMethod` ∈ `vnpay | momo | later | null`.
+`booking` gồm `departureId` (ObjectId của đợt — nguồn sự thật) và `departureDate` (bản sao denormalize chỉ để hiển thị). `booking.status` ∈ `pending_payment | paid | cancelled | completed`. `paymentMethod` ∈ `vnpay | momo | later | null`.
 
 ## Admin — `protect + requireAdmin` (mới) / `authorize('admin')` (cũ)
 
@@ -86,22 +89,15 @@ Lỗi chung khu admin: 401 `AUTH_REQUIRED`/`TOKEN_INVALID` (không token/token h
 
 ---
 
-## ⚠ PENDING: departureId — rủi ro đơn mồ côi khi sửa ngày khởi hành
+## ✅ RESOLVED: departureId (Batch 2 — 04/08/2026)
 
-**Hiện trạng.** Đợt khởi hành trong `tour.departures[]` KHÔNG có định danh ổn định. Toàn bộ vòng đời booking khớp đợt bằng **giá trị ngày**:
+**Shape mới.** `departures[]` = `{ _id, date, totalSlots, availableSlots, price }` — Mongoose tự sinh `_id`, đây là khóa ổn định của đợt. `Booking` thêm `departureId` (ObjectId, có index); `departureDate` GIỮ LẠI làm bản sao denormalize chỉ để hiển thị (sẽ cân nhắc xóa sau khi FE ổn định).
 
-1. FE chọn đợt bằng so sánh chuỗi ISO (`d.date === ngayChon`, TourDetail) và gửi nguyên chuỗi `departure.date` lên `POST /bookings`.
-2. BE tạo đơn: tìm đợt bằng `toDateString()` so khớp theo ngày, trừ chỗ nguyên tử theo `departures.$.date`.
-3. BE hủy đơn / admin hủy đơn: hoàn chỗ bằng `$elemMatch { date: { $gte: đầu-ngày, $lte: cuối-ngày } }` — khớp theo NGÀY của `booking.departureDate`.
+**Luồng mới (không còn bất kỳ phép khớp ngày nào):**
+1. FE (TourDetail) chọn đợt theo `departure._id`, gửi `departureId` trong `POST /bookings`.
+2. BE tìm đợt bằng `tour.departures.id(departureId)`; trừ chỗ nguyên tử `findOneAndUpdate` với `$elemMatch { _id, availableSlots: { $gte: guests } }` — thua điều kiện trả **409 `SLOT_UNAVAILABLE`** (đã chứng minh bằng `scripts/test-concurrent.mjs`: 20 request song song vào đợt 5 chỗ → đúng 5×201 + 15×409, slots = 0).
+3. Hủy đơn (user lẫn admin) hoàn chỗ theo `departures._id` — admin đổi `date` của đợt không còn làm trượt hoàn chỗ.
 
-**Rủi ro.** Khi admin có màn sửa tour (batch sau) và **đổi `date` của một đợt đã có đơn**:
-- Đơn cũ giữ `departureDate` cũ → khi hủy, phép khớp theo ngày **trượt** → `availableSlots` không được hoàn (mất chỗ âm thầm, `modifiedCount === 0` chỉ ghi console).
-- Đơn trở thành "mồ côi": không còn trỏ được về đợt nào của tour.
-- Hai đợt cùng ngày (khác giờ) sẽ khớp nhầm nhau vì mọi phép so đều theo ngày.
+**Migration đã chạy (04/08/2026):** `scripts/migrate-departures.mjs` (idempotent, có `--dry-run`) cấp `_id` + `totalSlots` cho 24/24 đợt, backfill `departureId` cho 3/9 đơn khớp được. **6 đơn mồ côi từ trước** (trỏ tour đã bị seed xóa) ghi tại `C:\TTTN\orphan-bookings.json` — không xóa, không đoán; các đơn này `departureId = null`, khi hủy sẽ bỏ qua bước hoàn chỗ và ghi log. Rollback: `scripts/rollback-departures.mjs` (đã test trên bản restore từ backup) hoặc `mongorestore` từ `C:\TTTN\backup-batch2-20260804-231856`.
 
-**Hướng xử lý đã chốt (Batch 2 — KHÔNG làm ở batch này):**
-- BE: để Mongoose sinh `_id` cho từng phần tử `departures[]` (bỏ `_id: false` nếu có), booking lưu thêm `departureId`; tạo/hủy/hoàn chỗ khớp bằng `departures._id`. Giữ `departureDate` làm dữ liệu hiển thị + fallback cho đơn cũ.
-- FE: TourDetail gửi `departureId` thay cho chuỗi ngày; `bookingService` cập nhật payload; màn admin sửa đợt chỉ được phép khi đã có `departureId`.
-- Migration: script backfill gán `departureId` cho đơn cũ bằng phép khớp ngày (lần cuối cùng dùng cách này).
-
-**Quy tắc tạm thời cho đến Batch 2:** admin KHÔNG sửa `departures[].date` của đợt đã có đơn; FE KHÔNG tự format lại chuỗi ngày trước khi gửi (`bookingService.js` đã ghi chú).
+**Quy tắc cho màn admin sửa tour (batch sau):** `PUT /tours/:id` thay `departures` NGUYÊN MẢNG — đợt đã tồn tại **bắt buộc gửi kèm `_id` cũ** (thiếu `_id` → Mongoose sinh id mới → booking đang trỏ tới đợt đó thành mồ côi). Đợt mới thì không gửi `_id`. Khi sửa đợt phải gửi đủ `totalSlots` + `availableSlots`.

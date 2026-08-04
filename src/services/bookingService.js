@@ -6,9 +6,9 @@
 import { request } from './api.js'
 
 // Tạo đơn đặt tour (UC-08).
-// payload: { tourId, departureDate, guests, contact: { name, phone, email }, paymentMethod, note }
-// Lưu ý: departureDate phải là ĐÚNG chuỗi ISO `departure.date` nhận từ API tour — Backend hoàn chỗ
-// khi hủy đơn bằng phép so khớp ngày tuyệt đối, gửi ngày tự format lại sẽ làm bước hoàn chỗ trượt.
+// payload: { tourId, departureId, guests, contact: { name, phone, email }, paymentMethod, note }
+// departureId là `departures[]._id` nhận từ API tour — khóa ổn định, Backend trừ/hoàn chỗ
+// theo id này nên admin đổi ngày đợt cũng không ảnh hưởng đơn đã đặt.
 export async function createBooking(payload) {
   const res = await request('/bookings', { method: 'POST', body: payload, auth: true })
   if (res.success === false) return res

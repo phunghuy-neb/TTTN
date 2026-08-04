@@ -49,9 +49,10 @@ export default function TourDetail() {
   const [error, setError] = useState('') // lỗi tải, cho phép thử lại
   const [activeImage, setActiveImage] = useState(0)
 
-  // Hộp đặt tour (UC-08): đợt khởi hành đang chọn (chuỗi ISO từ API) + số khách đang gõ.
+  // Hộp đặt tour (UC-08): đợt khởi hành đang chọn theo departure._id (khóa ổn định
+  // từ Backend — không khớp chuỗi ngày nữa) + số khách đang gõ.
   // Giữ số khách dạng chuỗi để ô nhập không nhảy giá trị khi người dùng xóa tạm.
-  const [ngayChon, setNgayChon] = useState('')
+  const [dotChonId, setDotChonId] = useState('')
   const [soKhachText, setSoKhachText] = useState('1')
 
   // Chống race condition khi đổi slug nhanh — xem hooks/useRequestGuard.js
@@ -74,7 +75,7 @@ export default function TourDetail() {
       setTour(res.data)
       setActiveImage(0)
       // Đổi tour → bỏ lựa chọn cũ của hộp đặt tour
-      setNgayChon('')
+      setDotChonId('')
       setSoKhachText('1')
     } catch {
       if (!isCurrent()) return
@@ -90,8 +91,8 @@ export default function TourDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug])
 
-  // Đợt khởi hành đang chọn + kiểm tra số khách so với số chỗ còn của đợt đó
-  const dotChon = tour?.departures?.find((d) => d.date === ngayChon) || null
+  // Đợt khởi hành đang chọn (theo _id) + kiểm tra số khách so với số chỗ còn của đợt đó
+  const dotChon = tour?.departures?.find((d) => d._id === dotChonId) || null
   const soKhach = Number(soKhachText)
   let loiSoKhach = ''
   if (!Number.isInteger(soKhach) || soKhach < 1) {
@@ -115,7 +116,9 @@ export default function TourDetail() {
         tourId: tour._id,
         slug: tour.slug,
         tourName: tour.name,
-        // Giữ nguyên chuỗi ISO từ API — Backend khớp đợt và hoàn chỗ theo đúng giá trị này
+        // Định danh đợt bằng _id — Backend trừ/hoàn chỗ theo departureId,
+        // date chỉ còn là dữ liệu hiển thị
+        departureId: dotChon._id,
         departureDate: dotChon.date,
         guests: soKhach,
         unitPrice: dotChon.price,
@@ -231,13 +234,13 @@ export default function TourDetail() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {tour.departures.map((dep) => {
                   const hetCho = dep.availableSlots <= 0
-                  const dangChon = dep.date === ngayChon
+                  const dangChon = dep._id === dotChonId
                   return (
                     <button
-                      key={dep.date}
+                      key={dep._id}
                       type="button"
                       disabled={hetCho}
-                      onClick={() => setNgayChon(dep.date)}
+                      onClick={() => setDotChonId(dep._id)}
                       className={`rounded-card border-[1.5px] p-4 text-left transition ${
                         dangChon ? 'border-teal bg-teal/5' : 'border-line bg-white hover:border-jade'
                       } ${hetCho ? 'cursor-not-allowed opacity-60 hover:border-line' : ''}`}

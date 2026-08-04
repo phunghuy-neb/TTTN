@@ -37,7 +37,7 @@ export default function Checkout() {
   const [submitting, setSubmitting] = useState(false)
 
   // Vào thẳng /checkout không qua trang chi tiết → không có dữ liệu đơn, không gọi API
-  if (!state?.tourId || !state?.departureDate || !state?.guests) {
+  if (!state?.tourId || !state?.departureId || !state?.guests) {
     return (
       <div className="wrap py-[56px]">
         <EmptyState
@@ -81,7 +81,7 @@ export default function Checkout() {
     setSubmitting(true)
     const res = await createBooking({
       tourId: state.tourId,
-      departureDate: state.departureDate,
+      departureId: state.departureId,
       guests: state.guests,
       contact: {
         name: form.name.trim(),
