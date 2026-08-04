@@ -24,9 +24,39 @@ const formatBooking = (b) => ({
   paidAt: b.paidAt,
   reviewed: b.reviewed,
   note: b.note,
+  statusHistory: b.statusHistory || [],
   createdAt: b.createdAt,
   updatedAt: b.updatedAt,
 })
+
+// Máy trạng thái đơn (Batch 4) — NGHIÊM NGẶT, không cho nhảy tùy ý.
+// completed/cancelled là trạng thái cuối, không đổi được nữa.
+const CHUYEN_TRANG_THAI = {
+  pending_payment: ['paid', 'cancelled'],
+  paid: ['completed', 'cancelled'],
+  completed: [],
+  cancelled: [],
+}
+
+// Hoàn chỗ về đúng đợt theo departureId — dùng chung cho user hủy lẫn admin hủy.
+// Đơn mồ côi (departureId null) → bỏ qua + ghi log, tuyệt đối không đoán theo ngày.
+async function hoanChoTheoDot(booking, nhan) {
+  if (!booking.departureId) {
+    console.error(
+      `[${nhan}] Đơn`,
+      booking.bookingCode,
+      'không có departureId (xem C:\\TTTN\\orphan-bookings.json) — bỏ qua hoàn chỗ.'
+    )
+    return
+  }
+  const ketQua = await Tour.updateOne(
+    { _id: booking.tour, 'departures._id': booking.departureId },
+    { $inc: { 'departures.$.availableSlots': booking.guests } }
+  )
+  if (ketQua.modifiedCount === 0) {
+    console.error(`[${nhan}] Không hoàn được chỗ cho đơn`, booking.bookingCode)
+  }
+}
 
 // ============================================================
 //  @route   POST /api/bookings
@@ -279,7 +309,12 @@ export const cancelBooking = async (req, res) => {
     // status = pending_payment mới thành công, request thứ hai trả về null.
     const daHuy = await Booking.findOneAndUpdate(
       { _id: booking._id, status: 'pending_payment' },
-      { $set: { status: 'cancelled' } },
+      {
+        $set: { status: 'cancelled' },
+        $push: {
+          statusHistory: { from: 'pending_payment', to: 'cancelled', byUserId: req.user._id, at: new Date() },
+        },
+      },
       { new: true }
     )
 
@@ -290,25 +325,9 @@ export const cancelBooking = async (req, res) => {
       })
     }
 
-    // Hoàn lại số chỗ trống theo departureId — khóa ổn định, không phụ thuộc ngày
-    // nên admin đổi ngày đợt cũng không làm bước hoàn chỗ trượt.
-    if (daHuy.departureId) {
-      const ketQuaHoan = await Tour.updateOne(
-        { _id: daHuy.tour, 'departures._id': daHuy.departureId },
-        { $inc: { 'departures.$.availableSlots': daHuy.guests } }
-      )
-      if (ketQuaHoan.modifiedCount === 0) {
-        console.error('[cancelBooking] Không hoàn được chỗ cho đơn', daHuy.bookingCode)
-      }
-    } else {
-      // Đơn cũ mồ côi (migrate không khớp được đợt) — không biết hoàn vào đâu,
-      // KHÔNG đoán theo ngày; chỉ ghi log để xử lý tay nếu cần.
-      console.error(
-        '[cancelBooking] Đơn',
-        daHuy.bookingCode,
-        'không có departureId (xem C:\\TTTN\\orphan-bookings.json) — bỏ qua hoàn chỗ.'
-      )
-    }
+    // Hoàn lại số chỗ trống theo departureId — khóa ổn định, không phụ thuộc ngày.
+    // Chạy SAU cú flip trạng thái có điều kiện nên không thể hoàn hai lần.
+    await hoanChoTheoDot(daHuy, 'cancelBooking')
 
     res.json({
       success: true,
@@ -333,6 +352,8 @@ export const getAllBookings = async (req, res) => {
       tourId,
       userId,
       search,
+      dateFrom,
+      dateTo,
       sort = '-createdAt',
       page = 1,
       limit = 20,
@@ -342,12 +363,27 @@ export const getAllBookings = async (req, res) => {
     if (status) filter.status = status
     if (tourId) filter.tour = tourId
     if (userId) filter.user = userId
+    // Khoảng ngày ĐẶT đơn (createdAt) — đầu ngày from → cuối ngày to
+    if (dateFrom || dateTo) {
+      filter.createdAt = {}
+      if (dateFrom) {
+        const tu = new Date(dateFrom)
+        tu.setHours(0, 0, 0, 0)
+        filter.createdAt.$gte = tu
+      }
+      if (dateTo) {
+        const den = new Date(dateTo)
+        den.setHours(23, 59, 59, 999)
+        filter.createdAt.$lte = den
+      }
+    }
     if (search) {
       filter.$or = [
         { bookingCode: { $regex: search, $options: 'i' } },
         { tourName: { $regex: search, $options: 'i' } },
         { 'contact.name': { $regex: search, $options: 'i' } },
         { 'contact.email': { $regex: search, $options: 'i' } },
+        { 'contact.phone': { $regex: search, $options: 'i' } },
       ]
     }
 
@@ -379,67 +415,105 @@ export const getAllBookings = async (req, res) => {
 }
 
 // ============================================================
+//  @route   GET /api/admin/bookings/:id
+//  @desc    Admin xem chi tiết đầy đủ 1 đơn (kèm statusHistory)
+//  @access  Private — Admin
+// ============================================================
+export const getAdminBooking = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id)
+      .populate('user', 'name email phone')
+      .populate('tour', 'name slug images location days')
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy đơn đặt.', code: 'NOT_FOUND' })
+    }
+    res.json({ success: true, booking: formatBooking(booking) })
+  } catch (error) {
+    console.error('[getAdminBooking]', error)
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
+  }
+}
+
+// ============================================================
 //  @route   PATCH /api/admin/bookings/:id/status
-//  @desc    Admin cập nhật trạng thái đơn (paid / completed / cancelled)
+//  @desc    Admin đổi trạng thái đơn theo máy trạng thái NGHIÊM NGẶT:
+//             pending_payment → paid | cancelled
+//             paid            → completed | cancelled
+//             completed / cancelled → trạng thái cuối, không đổi được
+//           Sai luồng → 409 INVALID_STATUS_TRANSITION.
+//           Chuyển sang cancelled → hoàn chỗ nguyên tử theo departureId.
 //  @access  Private — Admin
 // ============================================================
 export const updateBookingStatus = async (req, res) => {
   try {
     const { status, txnRef, paymentMethod } = req.body
 
-    const allowedStatuses = ['pending_payment', 'paid', 'cancelled', 'completed']
-    if (!status || !allowedStatuses.includes(status)) {
+    if (!status || !(status in CHUYEN_TRANG_THAI)) {
       return res.status(400).json({
         success: false,
-        message: `Trạng thái không hợp lệ. Chọn một trong: ${allowedStatuses.join(', ')}.`,
+        message: `Trạng thái không hợp lệ. Chọn một trong: ${Object.keys(CHUYEN_TRANG_THAI).join(', ')}.`,
+        code: 'VALIDATION_ERROR',
       })
     }
 
     const booking = await Booking.findById(req.params.id)
     if (!booking) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy đơn đặt.' })
+      return res.status(404).json({ success: false, message: 'Không tìm thấy đơn đặt.', code: 'NOT_FOUND' })
     }
 
-    const prevStatus = booking.status
-    booking.status = status
-
-    // Nếu đổi sang paid → ghi nhận thời điểm và phương thức thanh toán
-    if (status === 'paid' && prevStatus !== 'paid') {
-      booking.paidAt = new Date()
-      if (paymentMethod) booking.paymentMethod = paymentMethod
-      if (txnRef) booking.txnRef = txnRef
+    // Máy trạng thái — chặn nhảy tùy ý (kể cả gọi thẳng API không qua UI)
+    if (!CHUYEN_TRANG_THAI[booking.status].includes(status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Không thể chuyển đơn từ "${booking.status}" sang "${status}". Các bước hợp lệ: ${
+          CHUYEN_TRANG_THAI[booking.status].join(', ') || 'không còn (trạng thái cuối)'
+        }.`,
+        code: 'INVALID_STATUS_TRANSITION',
+        currentStatus: booking.status,
+      })
     }
 
-    // Nếu Admin hủy một đơn đang pending → hoàn lại chỗ trống theo departureId
-    // (giống cancelBooking — không khớp ngày nữa; đơn mồ côi chỉ ghi log).
-    if (status === 'cancelled' && prevStatus === 'pending_payment') {
-      if (booking.departureId) {
-        const ketQuaHoan = await Tour.updateOne(
-          { _id: booking.tour, 'departures._id': booking.departureId },
-          { $inc: { 'departures.$.availableSlots': booking.guests } }
-        )
-        if (ketQuaHoan.modifiedCount === 0) {
-          console.error('[updateBookingStatus] Không hoàn được chỗ cho đơn', booking.bookingCode)
-        }
-      } else {
-        console.error(
-          '[updateBookingStatus] Đơn',
-          booking.bookingCode,
-          'không có departureId (xem C:\\TTTN\\orphan-bookings.json) — bỏ qua hoàn chỗ.'
-        )
-      }
+    // Flip trạng thái CÓ ĐIỀU KIỆN: chỉ request khớp đúng trạng thái cũ mới thắng —
+    // hai admin bấm đồng thời thì người sau nhận 409, không có chuyện hoàn chỗ hai lần.
+    const capNhat = {
+      $set: { status },
+      $push: {
+        statusHistory: { from: booking.status, to: status, byUserId: req.user._id, at: new Date() },
+      },
+    }
+    if (status === 'paid') {
+      capNhat.$set.paidAt = new Date()
+      if (paymentMethod) capNhat.$set.paymentMethod = paymentMethod
+      if (txnRef) capNhat.$set.txnRef = txnRef
     }
 
-    await booking.save()
+    const daDoi = await Booking.findOneAndUpdate(
+      { _id: booking._id, status: booking.status },
+      capNhat,
+      { new: true }
+    )
+    if (!daDoi) {
+      return res.status(409).json({
+        success: false,
+        message: 'Đơn vừa được xử lý bởi một thao tác khác. Vui lòng tải lại trang.',
+        code: 'INVALID_STATUS_TRANSITION',
+      })
+    }
+
+    // Chuyển sang cancelled từ pending/paid (các trạng thái đang giữ chỗ)
+    // → hoàn chỗ nguyên tử theo departureId; đơn mồ côi chỉ ghi log.
+    if (status === 'cancelled') {
+      await hoanChoTheoDot(daDoi, 'updateBookingStatus')
+    }
 
     res.json({
       success: true,
-      message: `Cập nhật trạng thái đơn ${booking.bookingCode} thành "${status}" thành công.`,
-      booking: formatBooking(booking),
+      message: `Cập nhật trạng thái đơn ${daDoi.bookingCode} thành "${status}" thành công.`,
+      booking: formatBooking(daDoi),
     })
   } catch (error) {
     console.error('[updateBookingStatus]', error)
-    res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
   }
 }
 

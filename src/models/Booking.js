@@ -125,6 +125,20 @@ const BookingSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+
+    // Lịch sử đổi trạng thái (Batch 4) — phục vụ báo cáo/audit.
+    // byUserId: người thực hiện (admin đổi trạng thái, hoặc chính khách khi tự hủy).
+    statusHistory: [
+      new mongoose.Schema(
+        {
+          from: { type: String, required: true },
+          to: { type: String, required: true },
+          byUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+          at: { type: Date, default: Date.now },
+        },
+        { _id: false }
+      ),
+    ],
   },
   {
     timestamps: true,

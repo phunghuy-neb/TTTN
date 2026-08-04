@@ -1,8 +1,9 @@
 // ============================================================
 //  src/controllers/userController.js
-//  Quản lý User — dành cho Admin (CRUD + khóa tài khoản)
+//  Quản lý User — dành cho Admin (CRUD + khóa tài khoản + đổi quyền)
 // ============================================================
 import User from '../models/User.js'
+import Booking from '../models/Booking.js'
 
 // ── Helper: Format user trả về (bỏ password) ─────────────────
 const fmt = (u) => ({
@@ -52,12 +53,19 @@ export const getUsers = async (req, res) => {
       User.countDocuments(filter),
     ])
 
+    // Số đơn của từng user trong MỘT aggregate — FE hiển thị cột "Số đơn"
+    const demDon = await Booking.aggregate([
+      { $match: { user: { $in: users.map((u) => u._id) } } },
+      { $group: { _id: '$user', soDon: { $sum: 1 } } },
+    ])
+    const banDoDon = new Map(demDon.map((d) => [String(d._id), d.soDon]))
+
     res.json({
       success: true,
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
-      users: users.map(fmt),
+      users: users.map((u) => ({ ...fmt(u), soDon: banDoDon.get(String(u._id)) || 0 })),
     })
   } catch (error) {
     console.error('[getUsers]', error)
@@ -98,6 +106,19 @@ export const updateUser = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.' })
     }
 
+    // Chặn admin tự hạ quyền chính mình qua đường PUT (cùng luật với PATCH /role)
+    if (
+      role !== undefined &&
+      user._id.toString() === req.user._id.toString() &&
+      role !== 'admin'
+    ) {
+      return res.status(409).json({
+        success: false,
+        message: 'Không thể tự hạ quyền admin của chính mình.',
+        code: 'CANNOT_DEMOTE_SELF',
+      })
+    }
+
     if (name !== undefined) user.name = name
     if (phone !== undefined) user.phone = phone
     if (avatar !== undefined) user.avatar = avatar
@@ -129,7 +150,11 @@ export const toggleLockUser = async (req, res) => {
 
     // Không cho Admin tự khóa chính mình
     if (user._id.toString() === req.user._id.toString()) {
-      return res.status(400).json({ success: false, message: 'Không thể tự khóa tài khoản của chính mình.' })
+      return res.status(409).json({
+        success: false,
+        message: 'Không thể tự khóa tài khoản của chính mình.',
+        code: 'CANNOT_LOCK_SELF',
+      })
     }
 
     user.isActive = !user.isActive
@@ -144,5 +169,49 @@ export const toggleLockUser = async (req, res) => {
   } catch (error) {
     console.error('[toggleLockUser]', error)
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
+  }
+}
+
+// ============================================================
+//  @route   PATCH /api/admin/users/:id/role
+//  @desc    Đổi quyền customer ↔ admin.
+//           Admin KHÔNG thể tự hạ quyền chính mình (409 CANNOT_DEMOTE_SELF).
+//  @access  Private — Admin
+// ============================================================
+export const changeUserRole = async (req, res) => {
+  try {
+    const { role } = req.body
+    if (!['customer', 'admin'].includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Role không hợp lệ. Chọn "customer" hoặc "admin".',
+        code: 'VALIDATION_ERROR',
+      })
+    }
+
+    const user = await User.findById(req.params.id)
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy người dùng.', code: 'NOT_FOUND' })
+    }
+
+    if (user._id.toString() === req.user._id.toString() && role !== 'admin') {
+      return res.status(409).json({
+        success: false,
+        message: 'Không thể tự hạ quyền admin của chính mình.',
+        code: 'CANNOT_DEMOTE_SELF',
+      })
+    }
+
+    user.role = role
+    await user.save()
+
+    res.json({
+      success: true,
+      message: `Đã đổi quyền "${user.email}" thành ${role === 'admin' ? 'Admin' : 'Khách hàng'}.`,
+      user: fmt(user),
+    })
+  } catch (error) {
+    console.error('[changeUserRole]', error)
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
   }
 }

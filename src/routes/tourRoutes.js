@@ -7,7 +7,8 @@
 // ============================================================
 import { Router } from 'express'
 import { getTours, getTour, uploadImage } from '../controllers/tourController.js'
-import { protect, authorize } from '../middleware/auth.js'
+import { protect } from '../middleware/auth.js'
+import requireAdmin from '../middleware/requireAdmin.js'
 import upload from '../middleware/upload.js'
 
 const router = Router()
@@ -38,7 +39,7 @@ router.get('/:idOrSlug', (req, res, next) => {
 router.post(
   '/upload',
   protect,
-  authorize('admin'),
+  requireAdmin,
   upload.single('image'),
   uploadImage
 )

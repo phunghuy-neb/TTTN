@@ -8,17 +8,18 @@ import {
   getUser,
   updateUser,
   toggleLockUser,
+  changeUserRole,
 } from '../controllers/userController.js'
-import { protect, authorize } from '../middleware/auth.js'
+import { protect } from '../middleware/auth.js'
+import requireAdmin from '../middleware/requireAdmin.js'
 
 const router = Router()
 
 // Tất cả các route ở đây đều yêu cầu đăng nhập và có quyền admin
 router.use(protect)
-router.use(authorize('admin'))
+router.use(requireAdmin)
 
-// GET /api/admin/users         → Danh sách user (đã được định nghĩa bên authRoutes, nhưng đưa vào đây hợp lý hơn, tuy nhiên để tương thích ta giữ nguyên bên authRoutes hoặc tạo thêm)
-// Chú ý: Ở authRoutes đã có GET /api/admin/users (gọi getAllUsers). Để đầy đủ, ta map lại getUsers ở đây.
+// GET /api/admin/users            → Danh sách user (phân trang, search, lọc role, kèm số đơn)
 router.route('/')
   .get(getUsers)
 
@@ -26,7 +27,10 @@ router.route('/:id')
   .get(getUser)
   .put(updateUser)
 
-// PATCH /api/admin/users/:id/lock → Khóa/mở khóa
+// PATCH /api/admin/users/:id/lock → Khóa/mở khóa (không tự khóa mình — 409 CANNOT_LOCK_SELF)
 router.patch('/:id/lock', toggleLockUser)
+
+// PATCH /api/admin/users/:id/role → Đổi quyền (không tự hạ quyền — 409 CANNOT_DEMOTE_SELF)
+router.patch('/:id/role', changeUserRole)
 
 export default router
