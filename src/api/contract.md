@@ -20,6 +20,9 @@
 | `DEPARTURE_NOT_FOUND` | departureId không có trong tour (400) |
 | `DEPARTURE_PAST` | Đợt khởi hành đã qua (400) |
 | `SLOT_UNAVAILABLE` | Đợt không còn đủ chỗ — trừ chỗ nguyên tử thất bại (409) |
+| `DEPARTURE_HAS_BOOKINGS` | Xóa đợt còn đơn active — TỪ CHỐI CẢ request PUT, DB không đổi (409) |
+| `SLOTS_BELOW_BOOKED` | Hạ totalSlots xuống dưới số chỗ đang được giữ (409) |
+| `TOUR_HAS_BOOKINGS` | Ẩn tour còn đơn active (409) |
 | `UPLOAD_ERROR` | File upload sai định dạng/quá 5MB (400) |
 | `NOT_FOUND` | Không có route/tài nguyên (404) |
 | `BAD_REQUEST` / `UNAUTHORIZED` / `CONFLICT` / `REQUEST_ERROR` | Code mặc định bơm theo status khi controller chưa đặt code riêng |
@@ -52,14 +55,26 @@
 `tour` = `{ _id, name, slug, region, location, days, description, basePrice, oldPrice, images[], avgRating, itinerary[], departures[], reviews[], cancellationPolicy, status, createdBy, searchText }`.
 `departures[]` = `{ _id, date (ISO), totalSlots, availableSlots, price }` — **`_id` là khóa ổn định của đợt; FE chọn đợt và đặt tour bằng `_id` này** (xem RESOLVED bên dưới).
 
-## Tours (admin) — `protect + authorize('admin')`
+## Tours (admin) — `/api/admin/tours`, `protect + requireAdmin` (Batch 3)
 
-| Method | Path | Body | Response 2xx | Lỗi |
+CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `/api/tours` **đã bị gỡ** (gán đè cả mảng `departures` là đường sinh đơn mồ côi). Chỉ còn upload ảnh ở chỗ cũ.
+
+| Method | Path | Body/Query | Response 2xx | Lỗi |
 |---|---|---|---|---|
-| POST | `/tours` | multipart (`images` tối đa 10 file) hoặc JSON | `201 { success, message, tour }` | 400 validation/trùng slug, 400 `UPLOAD_ERROR` |
-| PUT | `/tours/:id` | như trên (ảnh mới nối vào mảng cũ) | `200 { success, message, tour }` | 404, 400 |
-| DELETE | `/tours/:id` | — | `200` (xóa mềm → `status: 'archived'`) | 404 |
-| POST | `/tours/upload` | multipart `image` (1 file) | `200 { success, url }` | 400 `UPLOAD_ERROR` |
+| GET | `/admin/tours` | `?search&isActive(true/false)&status&sort&page&limit` | `200 { success, total, page, totalPages, tours[] }` — mỗi tour kèm `activeBookings` | |
+| GET | `/admin/tours/:id` | — | `200 { success, tour, bookingsByDeparture{depId:n}, activeBookings }` | 404 |
+| POST | `/admin/tours` | JSON hoặc multipart; bắt buộc `departures` ≥ 1 đợt, mỗi đợt `date` không quá khứ, `totalSlots > 0`, `price > 0`; `availableSlots` server tự đặt = `totalSlots` | `201 { success, message, tour }` | 400 `VALIDATION_ERROR`/`UPLOAD_ERROR` |
+| PUT | `/admin/tours/:id` | như POST + **quy tắc merge departures bên dưới** | `200 { success, message, tour }` | 400, **409 `DEPARTURE_HAS_BOOKINGS` / `SLOTS_BELOW_BOOKED`** |
+| DELETE | `/admin/tours/:id` | — | `200` — soft delete `isActive=false`, KHÔNG hard delete | 404, **409 `TOUR_HAS_BOOKINGS`** |
+| POST | `/tours/upload` | multipart `image` (1 file, ≤5MB, jpg/png/webp) | `200 { success, url }` | 400 `UPLOAD_ERROR` |
+
+**Quy tắc merge `departures` của PUT (chống mồ côi — BE không tin payload):**
+- Phần tử **có `_id`** → update tại chỗ, `_id` giữ nguyên. `availableSlots` KHÔNG nhận từ client — server `$inc` theo phần chênh `totalSlots` (tăng tổng → chỗ trống tăng đúng chênh; giảm dưới số đang giữ → 409 `SLOTS_BELOW_BOOKED`).
+- Phần tử **không `_id`** → tạo đợt mới (`availableSlots = totalSlots`).
+- Đợt cũ **vắng mặt** trong payload = yêu cầu xóa: còn đơn active → **409 `DEPARTURE_HAS_BOOKINGS` từ chối CẢ request, DB không đổi** (response kèm `departures: [{departureId, soDon}]`); không còn đơn → xóa.
+- Mọi validate chạy xong hết mới ghi → nhận 4xx/409 nghĩa là DB chưa bị đụng.
+
+**`isActive` (soft delete):** `false` → tour biến mất khỏi `GET /tours` + `GET /tours/:idOrSlug` phía client (404), vẫn hiện đầy đủ ở `/admin/tours`. Hiện lại bằng `PUT { isActive: true }`.
 
 ## Bookings (user) — `protect`
 

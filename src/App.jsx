@@ -15,6 +15,8 @@ import Checkout from './pages/Checkout.jsx'
 import Payment from './pages/Payment.jsx'
 import Bookings from './pages/Bookings.jsx'
 import Dashboard from './pages/admin/Dashboard.jsx'
+import AdminTours from './pages/admin/Tours.jsx'
+import AdminTourForm from './pages/admin/TourForm.jsx'
 import Forbidden from './pages/Forbidden.jsx'
 import NotFound from './pages/NotFound.jsx'
 
@@ -52,6 +54,9 @@ export default function App() {
             <Route element={<AdminRoute />}>
               <Route path="admin" element={<AdminLayout />}>
                 <Route index element={<Dashboard />} />
+                <Route path="tours" element={<AdminTours />} />
+                <Route path="tours/new" element={<AdminTourForm />} />
+                <Route path="tours/:id/edit" element={<AdminTourForm />} />
                 <Route path="*" element={<NotFound />} />
               </Route>
             </Route>

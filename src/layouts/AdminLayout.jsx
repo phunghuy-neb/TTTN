@@ -5,14 +5,21 @@ import { useAuth } from '../context/AuthContext.jsx'
 // Chỉ render bên trong AdminRoute nên user ở đây luôn là admin.
 
 // Mục điều hướng đang hoạt động — thêm dần khi admin có thêm trang
-const NAV = [{ to: '/admin', label: 'Dashboard', icon: '▦', end: true }]
+const NAV = [
+  { to: '/admin', label: 'Dashboard', icon: '▦', end: true },
+  { to: '/admin/tours', label: 'Quản lý tour', icon: '🗺', end: false },
+]
 
 // Các khu sẽ làm ở batch sau — hiển thị mờ, không bấm được
-const SAP_CO = ['Quản lý tour', 'Quản lý đơn đặt', 'Quản lý người dùng']
+const SAP_CO = ['Quản lý đơn đặt', 'Quản lý người dùng']
 
-// Nhãn breadcrumb theo path
-const BREADCRUMB = {
-  '/admin': 'Dashboard',
+// Nhãn breadcrumb theo path — khớp exact trước, rồi tới pattern
+function tenBreadcrumb(pathname) {
+  if (pathname === '/admin') return 'Dashboard'
+  if (pathname === '/admin/tours') return 'Quản lý tour'
+  if (pathname === '/admin/tours/new') return 'Thêm tour'
+  if (/^\/admin\/tours\/[^/]+\/edit$/.test(pathname)) return 'Sửa tour'
+  return 'Không tìm thấy'
 }
 
 export default function AdminLayout() {
@@ -93,7 +100,7 @@ export default function AdminLayout() {
               Admin
             </Link>
             <span>/</span>
-            <span className="font-semibold text-ink">{BREADCRUMB[pathname] || 'Không tìm thấy'}</span>
+            <span className="font-semibold text-ink">{tenBreadcrumb(pathname)}</span>
           </nav>
 
           <div className="flex items-center gap-3">
