@@ -29,6 +29,7 @@ export const protect = async (req, res, next) => {
     return res.status(401).json({
       success: false,
       message: 'Bạn chưa đăng nhập. Vui lòng đăng nhập để tiếp tục.',
+      code: 'AUTH_REQUIRED',
     })
   }
 
@@ -43,6 +44,7 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: 'Token không hợp lệ. Tài khoản không tồn tại.',
+        code: 'TOKEN_INVALID',
       })
     }
 
@@ -51,6 +53,7 @@ export const protect = async (req, res, next) => {
       return res.status(403).json({
         success: false,
         message: 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ Admin.',
+        code: 'ACCOUNT_LOCKED',
       })
     }
 
@@ -60,6 +63,7 @@ export const protect = async (req, res, next) => {
     return res.status(401).json({
       success: false,
       message: 'Token không hợp lệ hoặc đã hết hạn. Vui lòng đăng nhập lại.',
+      code: 'TOKEN_INVALID',
     })
   }
 }
@@ -78,6 +82,7 @@ export const authorize = (...roles) => {
       return res.status(403).json({
         success: false,
         message: `Bạn không có quyền thực hiện thao tác này. Yêu cầu quyền: ${roles.join(', ')}.`,
+        code: 'FORBIDDEN',
       })
     }
     next()

@@ -5,9 +5,11 @@
 import jwt from 'jsonwebtoken'
 import User from '../models/User.js'
 
-// ── Helper: Tạo JWT token từ user ID ────────────────────────
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, {
+// ── Helper: Tạo JWT token từ user ───────────────────────────
+// Payload nhúng cả role để client đọc được quyền ngay từ token;
+// middleware protect vẫn lấy role từ DB nên đổi quyền là token cũ hết tác dụng phân quyền.
+const generateToken = (user) => {
+  return jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE,
   })
 }
@@ -39,6 +41,7 @@ export const register = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng điền đầy đủ họ tên, email và mật khẩu.',
+        code: 'VALIDATION_ERROR',
       })
     }
 
@@ -48,6 +51,7 @@ export const register = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Email này đã được sử dụng. Vui lòng dùng email khác hoặc đăng nhập.',
+        code: 'EMAIL_TAKEN',
       })
     }
 
@@ -59,7 +63,7 @@ export const register = async (req, res) => {
     })
 
     // 4. Tạo JWT token
-    const token = generateToken(user._id)
+    const token = generateToken(user)
 
     res.status(201).json({
       success: true,
@@ -74,12 +78,14 @@ export const register = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: messages[0],
+        code: 'VALIDATION_ERROR',
       })
     }
     console.error('[register] Lỗi:', error)
     res.status(500).json({
       success: false,
       message: 'Lỗi máy chủ. Vui lòng thử lại sau.',
+      code: 'SERVER_ERROR',
     })
   }
 }
@@ -98,6 +104,7 @@ export const login = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng nhập email và mật khẩu.',
+        code: 'VALIDATION_ERROR',
       })
     }
 
@@ -108,6 +115,7 @@ export const login = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: 'Email hoặc mật khẩu không đúng.',
+        code: 'INVALID_CREDENTIALS',
       })
     }
 
@@ -116,6 +124,7 @@ export const login = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ Admin.',
+        code: 'ACCOUNT_LOCKED',
       })
     }
 
@@ -125,11 +134,12 @@ export const login = async (req, res) => {
       return res.status(401).json({
         success: false,
         message: 'Email hoặc mật khẩu không đúng.',
+        code: 'INVALID_CREDENTIALS',
       })
     }
 
     // 5. Tạo JWT token
-    const token = generateToken(user._id)
+    const token = generateToken(user)
 
     res.status(200).json({
       success: true,
@@ -142,6 +152,7 @@ export const login = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Lỗi máy chủ. Vui lòng thử lại sau.',
+      code: 'SERVER_ERROR',
     })
   }
 }
