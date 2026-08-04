@@ -157,6 +157,13 @@ const TourSchema = new mongoose.Schema(
       default: 'draft',
     },
 
+    // Soft delete (Batch 3): false = admin đã ẩn tour — biến mất khỏi API client
+    // nhưng vẫn hiện ở khu admin. Không hard delete để đơn cũ còn tham chiếu được.
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+
     // Cầu nối sang ChromaDB (AI Service — Tuần 3 Mai Tuấn Anh)
     vectorSync: {
       type: VectorSyncSchema,

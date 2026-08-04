@@ -33,11 +33,12 @@ export const getTours = async (req, res) => {
     // Xây filter
     const filter = {}
 
-    // Admin có thể lấy tất cả status; public chỉ lấy published
+    // Admin có thể lấy tất cả status; public chỉ lấy published và chưa bị ẩn
     if (req.user?.role === 'admin') {
       if (status !== 'all') filter.status = status
     } else {
       filter.status = 'published'
+      filter.isActive = { $ne: false } // tour soft-delete (Batch 3) ẩn khỏi client
     }
 
     if (region) filter.region = region
@@ -138,8 +139,8 @@ export const getTour = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy tour.' })
     }
 
-    // Khách vãng lai chỉ được xem tour published
-    if (tour.status !== 'published' && req.user?.role !== 'admin') {
+    // Khách vãng lai chỉ được xem tour published và chưa bị ẩn (soft delete)
+    if ((tour.status !== 'published' || tour.isActive === false) && req.user?.role !== 'admin') {
       return res.status(404).json({ success: false, message: 'Không tìm thấy tour.' })
     }
 
@@ -149,131 +150,6 @@ export const getTour = async (req, res) => {
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
   }
 }
-
-// ============================================================
-//  @route   POST /api/tours
-//  @desc    Tạo tour mới (Admin only)
-//  @access  Private — Admin
-// ============================================================
-export const createTour = async (req, res) => {
-  try {
-    const body = { ...req.body, createdBy: req.user._id }
-
-    // Nếu có file upload, thêm URL ảnh vào mảng images
-    if (req.files && req.files.length > 0) {
-      body.images = req.files.map((f) => buildImageUrl(req, f.filename))
-    }
-
-    // Chuyển kiểu dữ liệu JSON string sang object (khi gửi qua form-data)
-    if (typeof body.itinerary === 'string') body.itinerary = JSON.parse(body.itinerary)
-    if (typeof body.departures === 'string') body.departures = JSON.parse(body.departures)
-    if (typeof body.tags === 'string') body.tags = JSON.parse(body.tags)
-
-    const tour = await Tour.create(body)
-
-    res.status(201).json({
-      success: true,
-      message: 'Tạo tour thành công!',
-      tour,
-    })
-  } catch (error) {
-    if (error.name === 'ValidationError') {
-      const msg = Object.values(error.errors).map((e) => e.message)[0]
-      return res.status(400).json({ success: false, message: msg })
-    }
-    if (error.code === 11000) {
-      return res.status(400).json({ success: false, message: 'Tên tour bị trùng slug. Hãy đặt tên khác.' })
-    }
-    console.error('[createTour]', error)
-    res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
-  }
-}
-
-// ============================================================
-//  @route   PUT /api/tours/:id
-//  @desc    Cập nhật tour (Admin only)
-//  @access  Private — Admin
-// ============================================================
-export const updateTour = async (req, res) => {
-  try {
-    const tour = await Tour.findById(req.params.id)
-    if (!tour) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy tour.' })
-    }
-
-    const body = { ...req.body }
-
-    // Nếu có ảnh upload mới → thêm vào mảng images hiện có
-    if (req.files && req.files.length > 0) {
-      const newImages = req.files.map((f) => buildImageUrl(req, f.filename))
-      body.images = [...(tour.images || []), ...newImages]
-    }
-
-    if (typeof body.itinerary === 'string') body.itinerary = JSON.parse(body.itinerary)
-    // LƯU Ý HỢP ĐỒNG: body.departures thay thế NGUYÊN MẢNG. Đợt đã tồn tại PHẢI
-    // gửi kèm _id cũ — thiếu _id Mongoose sẽ sinh id mới và mọi booking đang trỏ
-    // tới đợt đó (booking.departureId) thành mồ côi. Đợt mới thì không gửi _id.
-    if (typeof body.departures === 'string') body.departures = JSON.parse(body.departures)
-    if (typeof body.tags === 'string') body.tags = JSON.parse(body.tags)
-
-    // Nếu tên thay đổi → cần cập nhật slug
-    if (body.name && body.name !== tour.name) {
-      body.slug = body.name
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/đ/g, 'd')
-        .replace(/[^a-z0-9\s-]/g, '')
-        .trim()
-        .replace(/\s+/g, '-')
-
-      // Đánh dấu cần đồng bộ lại AI khi nội dung thay đổi
-      body.vectorSync = { isSynced: false }
-    }
-
-    const updated = await Tour.findByIdAndUpdate(req.params.id, body, {
-      new: true,
-      runValidators: true,
-    })
-
-    // findByIdAndUpdate KHÔNG kích hoạt hook pre('save'), nên searchText sẽ giữ
-    // giá trị cũ. Lưu lại một lần để hook chạy và tính lại searchText từ dữ liệu mới.
-    await updated.save()
-
-    res.json({ success: true, message: 'Cập nhật tour thành công!', tour: updated })
-  } catch (error) {
-    if (error.name === 'ValidationError') {
-      const msg = Object.values(error.errors).map((e) => e.message)[0]
-      return res.status(400).json({ success: false, message: msg })
-    }
-    console.error('[updateTour]', error)
-    res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
-  }
-}
-
-// ============================================================
-//  @route   DELETE /api/tours/:id
-//  @desc    Xóa mềm tour (đổi status → archived) — Admin only
-//  @access  Private — Admin
-// ============================================================
-export const deleteTour = async (req, res) => {
-  try {
-    const tour = await Tour.findById(req.params.id)
-    if (!tour) {
-      return res.status(404).json({ success: false, message: 'Không tìm thấy tour.' })
-    }
-
-    // Xóa mềm: chuyển sang archived thay vì xóa hẳn khỏi DB
-    tour.status = 'archived'
-    await tour.save()
-
-    res.json({ success: true, message: 'Tour đã được ẩn (archived) thành công.' })
-  } catch (error) {
-    console.error('[deleteTour]', error)
-    res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
-  }
-}
-
 // ============================================================
 //  @route   POST /api/tours/upload
 //  @desc    Upload ảnh đơn lẻ — trả về URL để dùng trong form

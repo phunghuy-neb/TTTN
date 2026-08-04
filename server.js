@@ -11,6 +11,7 @@ import tourRoutes from './src/routes/tourRoutes.js'
 import userRoutes from './src/routes/userRoutes.js'
 import bookingRoutes from './src/routes/bookingRoutes.js'
 import adminBookingRoutes from './src/routes/adminBookingRoutes.js'
+import adminTourRoutes from './src/routes/adminTourRoutes.js'
 import adminRoutes from './src/routes/adminRoutes.js'
 
 // ── Kết nối MongoDB ───────────────────────────────────────────
@@ -83,6 +84,8 @@ app.use('/api/admin/users', userRoutes)
 app.use('/api/bookings', bookingRoutes)
 // Admin Booking routes
 app.use('/api/admin/bookings', adminBookingRoutes)
+// Admin Tour routes (Batch 3 — merge departures theo _id, chống đơn mồ côi)
+app.use('/api/admin/tours', adminTourRoutes)
 // Admin routes dùng chung (stats, ...) — mount SAU các mount /api/admin/* cụ thể
 // để request tới users/bookings không phải đi vòng qua router này
 app.use('/api/admin', adminRoutes)
