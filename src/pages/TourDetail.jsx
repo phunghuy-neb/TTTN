@@ -1,24 +1,28 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useParams, useNavigate, useLocation } from 'react-router-dom'
 import { getTourBySlug } from '../services/tourService.js'
 import { formatPrice, formatDate } from '../utils/format.js'
 import { useAuth } from '../context/AuthContext.jsx'
+import Button from '../components/ui/Button.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import Skeleton from '../components/ui/Skeleton.jsx'
+import { useRequestGuard } from '../hooks/useRequestGuard.js'
 
 // Khung xương lúc đang tải
 function DetailSkeleton() {
   return (
-    <div className="animate-pulse">
-      <div className="aspect-[16/9] w-full rounded-card bg-sand" />
+    <div>
+      <Skeleton className="aspect-[16/9] w-full rounded-card" />
       <div className="mt-3 flex gap-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="aspect-[16/9] w-[110px] rounded-[12px] bg-sand" />
+          <Skeleton key={i} className="aspect-[16/9] w-[110px] rounded-[12px]" />
         ))}
       </div>
-      <div className="mt-7 h-4 w-[120px] rounded bg-sand" />
-      <div className="mt-3 h-8 w-2/3 rounded bg-sand" />
-      <div className="mt-3 h-4 w-1/2 rounded bg-sand" />
-      <div className="mt-7 h-[120px] w-full rounded-card bg-sand" />
-      <div className="mt-6 h-[220px] w-full rounded-card bg-sand" />
+      <Skeleton className="mt-7 h-4 w-[120px] rounded" />
+      <Skeleton className="mt-3 h-8 w-2/3 rounded" />
+      <Skeleton className="mt-3 h-4 w-1/2 rounded" />
+      <Skeleton className="mt-7 h-[120px] w-full rounded-card" />
+      <Skeleton className="mt-6 h-[220px] w-full rounded-card" />
     </div>
   )
 }
@@ -50,18 +54,17 @@ export default function TourDetail() {
   const [ngayChon, setNgayChon] = useState('')
   const [soKhachText, setSoKhachText] = useState('1')
 
-  // Đánh số mỗi lần gọi: đổi slug nhanh khiến nhiều request cùng bay,
-  // request cũ về sau sẽ ghi đè tour mới nếu không bỏ qua kết quả lỗi thời.
-  const requestId = useRef(0)
+  // Chống race condition khi đổi slug nhanh — xem hooks/useRequestGuard.js
+  const beginRequest = useRequestGuard()
 
   async function load() {
-    const id = ++requestId.current
+    const isCurrent = beginRequest()
     setLoading(true)
     setNotice('')
     setError('')
     try {
       const res = await getTourBySlug(slug)
-      if (id !== requestId.current) return // đã có request mới hơn — bỏ kết quả này
+      if (!isCurrent()) return // đã có request mới hơn — bỏ kết quả này
       if (!res.success) {
         setTour(null)
         // Hiển thị đúng message service/Backend trả về, chỉ fallback khi rỗng (§14)
@@ -74,11 +77,11 @@ export default function TourDetail() {
       setNgayChon('')
       setSoKhachText('1')
     } catch {
-      if (id !== requestId.current) return
+      if (!isCurrent()) return
       setTour(null)
       setError('Không tải được thông tin tour.')
     } finally {
-      if (id === requestId.current) setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
@@ -138,15 +141,16 @@ export default function TourDetail() {
 
       {/* Trạng thái 2 — tour không tồn tại hoặc không còn mở bán */}
       {!loading && notice && (
-        <div className="card-surface mx-auto mt-10 max-w-[560px] p-8 text-center">
-          <p className="font-heading text-[20px] font-semibold text-ink">{notice}</p>
-          <p className="mt-2 text-[14.5px] text-muted">
-            Bạn có thể quay lại danh sách để chọn hành trình khác.
-          </p>
-          <Link to="/tours" className="btn-teal mt-5">
-            Về danh sách tour
-          </Link>
-        </div>
+        <EmptyState
+          className="mx-auto mt-10 max-w-[560px]"
+          title={notice}
+          description="Bạn có thể quay lại danh sách để chọn hành trình khác."
+          action={
+            <Link to="/tours" className="btn-teal">
+              Về danh sách tour
+            </Link>
+          }
+        />
       )}
 
       {/* Trạng thái 3 — lỗi tải, cho thử lại */}
@@ -154,9 +158,7 @@ export default function TourDetail() {
         <div className="card-surface mx-auto mt-10 max-w-[560px] p-8 text-center">
           <p className="text-coralD">{error}</p>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-            <button type="button" className="btn-teal" onClick={load}>
-              Thử lại
-            </button>
+            <Button onClick={load}>Thử lại</Button>
             <Link to="/tours" className="btn-ghost">
               Về danh sách tour
             </Link>
@@ -281,14 +283,9 @@ export default function TourDetail() {
                   {tongTien != null ? formatPrice(tongTien) : '—'}
                 </p>
               </div>
-              <button
-                type="button"
-                className="btn-coral"
-                disabled={!dotChon || !!loiSoKhach}
-                onClick={datTour}
-              >
+              <Button variant="coral" disabled={!dotChon || !!loiSoKhach} onClick={datTour}>
                 Đặt tour ngay
-              </button>
+              </Button>
             </div>
             {loiSoKhach && <div className="field-error">{loiSoKhach}</div>}
             {!dotChon && tour.departures?.length > 0 && (
@@ -368,9 +365,7 @@ export default function TourDetail() {
                 Trợ lý AI có thể tư vấn thời điểm đi, chi phí và điểm đến tương tự.
               </p>
             </div>
-            <button type="button" className="btn-coral">
-              Hỏi trợ lý AI về tour này
-            </button>
+            <Button variant="coral">Hỏi trợ lý AI về tour này</Button>
           </div>
         </div>
       )}

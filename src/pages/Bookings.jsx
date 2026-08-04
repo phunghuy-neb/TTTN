@@ -1,7 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { getMyBookings, cancelBooking } from '../services/bookingService.js'
 import { formatPrice, formatDate } from '../utils/format.js'
+import Button from '../components/ui/Button.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import Modal from '../components/ui/Modal.jsx'
+import Pagination from '../components/ui/Pagination.jsx'
+import Skeleton from '../components/ui/Skeleton.jsx'
+import { useToast } from '../components/ui/Toast.jsx'
+import { useRequestGuard } from '../hooks/useRequestGuard.js'
 
 // Nhãn tiếng Việt + màu phân biệt cho từng trạng thái đơn — chỉ dùng token màu sẵn có
 const TRANG_THAI = {
@@ -23,15 +30,15 @@ const BO_LOC = [
 // Trang lịch sử đặt tour (UC-10) — bộ lọc + phân trang lấy URL query string làm nguồn duy nhất
 export default function Bookings() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const toast = useToast()
   const [bookings, setBookings] = useState([])
   const [pagination, setPagination] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // Hủy đơn: id đang chờ người dùng xác nhận, id đang gửi API, lỗi hủy gần nhất
-  const [huyId, setHuyId] = useState('')
-  const [huyDangGui, setHuyDangGui] = useState('')
-  const [loiHuy, setLoiHuy] = useState('')
+  // Hủy đơn: đơn đang chờ người dùng xác nhận trong Modal + cờ đang gửi API
+  const [donChoHuy, setDonChoHuy] = useState(null)
+  const [huyDangGui, setHuyDangGui] = useState(false)
 
   // Tăng để buộc effect tải lại theo ĐÚNG bộ lọc hiện tại trên URL — gọi thẳng load()
   // từ closure hủy đơn sẽ dùng status/page cũ nếu người dùng vừa đổi bộ lọc
@@ -41,18 +48,17 @@ export default function Bookings() {
   const page = Number(searchParams.get('page')) || 1
   const status = searchParams.get('status') || ''
 
-  // Đánh số mỗi lần gọi: đổi bộ lọc/trang liên tiếp khiến nhiều request cùng bay,
-  // request cũ về sau sẽ ghi đè kết quả của bộ lọc mới nếu không bỏ qua kết quả lỗi thời.
-  const requestId = useRef(0)
+  // Chống race condition khi đổi bộ lọc/trang liên tiếp — xem hooks/useRequestGuard.js
+  const beginRequest = useRequestGuard()
 
   // Tải danh sách đơn theo bộ lọc hiện tại trên URL
   async function load() {
-    const id = ++requestId.current
+    const isCurrent = beginRequest()
     setLoading(true)
     setError('')
     try {
       const res = await getMyBookings({ status, page })
-      if (id !== requestId.current) return // đã có request mới hơn — bỏ kết quả này
+      if (!isCurrent()) return // đã có request mới hơn — bỏ kết quả này
       if (!res.success) {
         setError(res.message || 'Không tải được lịch sử đặt tour.')
         return
@@ -66,10 +72,10 @@ export default function Bookings() {
       setBookings(res.data)
       setPagination(res.pagination)
     } catch {
-      if (id !== requestId.current) return
+      if (!isCurrent()) return
       setError('Không tải được lịch sử đặt tour.')
     } finally {
-      if (id === requestId.current) setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
@@ -83,8 +89,7 @@ export default function Bookings() {
     const params = {}
     if (value) params.status = value
     setSearchParams(params)
-    setHuyId('')
-    setLoiHuy('')
+    setDonChoHuy(null)
   }
 
   // Đổi trang — chỉ ghi page, giữ nguyên bộ lọc, cuộn lên đầu
@@ -96,23 +101,23 @@ export default function Bookings() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  // Gọi API hủy sau khi người dùng đã bấm xác nhận — thành công thì tải lại danh sách
-  async function xacNhanHuy(id) {
-    setHuyDangGui(id)
-    setLoiHuy('')
-    const res = await cancelBooking(id)
-    setHuyDangGui('')
-    setHuyId('')
+  // Gọi API hủy sau khi người dùng đã bấm xác nhận trong Modal — báo kết quả bằng toast
+  async function xacNhanHuy() {
+    if (!donChoHuy) return
+    setHuyDangGui(true)
+    const res = await cancelBooking(donChoHuy._id)
+    setHuyDangGui(false)
+    setDonChoHuy(null)
     if (!res.success) {
-      setLoiHuy(res.message || 'Không hủy được đơn. Vui lòng thử lại.')
+      toast(res.message || 'Không hủy được đơn. Vui lòng thử lại.', 'error')
       return
     }
+    toast(res.message || 'Đã hủy đơn thành công.')
     // Tải lại qua refreshKey để effect đọc đúng bộ lọc/trang hiện tại trên URL
     setRefreshKey((k) => k + 1)
   }
 
   const totalPages = pagination?.totalPages ?? 1
-  const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1)
 
   return (
     <div className="wrap py-[56px]">
@@ -141,18 +146,11 @@ export default function Bookings() {
         ))}
       </div>
 
-      {/* Lỗi hủy đơn gần nhất — message thật từ Backend */}
-      {loiHuy && (
-        <div className="mt-4 rounded-[11px] border border-coral/40 bg-coral/5 px-3.5 py-2.5 text-[13.5px] text-coralD">
-          {loiHuy}
-        </div>
-      )}
-
       {/* Đang tải — 3 khối skeleton dạng thẻ đơn */}
       {loading && (
         <div className="mt-7 flex flex-col gap-4">
           {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="overflow-hidden rounded-card bg-sand animate-pulse">
+            <Skeleton key={i} className="overflow-hidden rounded-card">
               <div className="flex flex-col sm:flex-row">
                 <div className="h-[150px] w-full bg-sand sm:w-[220px]" />
                 <div className="flex-1 p-5">
@@ -161,7 +159,7 @@ export default function Bookings() {
                   <div className="mt-3 h-4 w-1/2 rounded bg-line" />
                 </div>
               </div>
-            </div>
+            </Skeleton>
           ))}
         </div>
       )}
@@ -170,25 +168,24 @@ export default function Bookings() {
       {!loading && error && (
         <div className="card-surface mt-7 p-6 text-center">
           <p className="text-coralD">{error}</p>
-          <button type="button" className="btn-teal mt-4" onClick={load}>
+          <Button className="mt-4" onClick={load}>
             Thử lại
-          </button>
+          </Button>
         </div>
       )}
 
       {/* Rỗng */}
       {!loading && !error && bookings.length === 0 && (
-        <div className="card-surface mt-7 p-8 text-center">
-          <p className="font-heading text-[20px] font-semibold text-ink">
-            {status ? 'Không có đơn nào ở trạng thái này.' : 'Bạn chưa đặt tour nào.'}
-          </p>
-          <p className="mt-2 text-[14.5px] text-muted">
-            Khám phá các hành trình và đặt chuyến đi đầu tiên của bạn.
-          </p>
-          <Link to="/tours" className="btn-teal mt-5">
-            Khám phá tour
-          </Link>
-        </div>
+        <EmptyState
+          className="mt-7"
+          title={status ? 'Không có đơn nào ở trạng thái này.' : 'Bạn chưa đặt tour nào.'}
+          description="Khám phá các hành trình và đặt chuyến đi đầu tiên của bạn."
+          action={
+            <Link to="/tours" className="btn-teal">
+              Khám phá tour
+            </Link>
+          }
+        />
       )}
 
       {/* Có dữ liệu — danh sách thẻ đơn */}
@@ -246,42 +243,15 @@ export default function Bookings() {
                         </span>
                       </div>
 
-                      {/* Hủy đơn — chỉ với đơn chờ thanh toán, hỏi xác nhận trước khi gọi API */}
+                      {/* Hủy đơn — chỉ với đơn chờ thanh toán, xác nhận qua Modal */}
                       {b.status === 'pending_payment' && (
-                        huyId === b._id ? (
-                          <div className="mt-4 flex flex-wrap items-center gap-3">
-                            <span className="text-[14px] font-semibold text-coralD">
-                              Bạn chắc chắn muốn hủy đơn này?
-                            </span>
-                            <button
-                              type="button"
-                              className="btn-coral !px-4 !py-2 text-[14px]"
-                              disabled={huyDangGui === b._id}
-                              onClick={() => xacNhanHuy(b._id)}
-                            >
-                              {huyDangGui === b._id ? 'Đang hủy…' : 'Xác nhận hủy'}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-ghost !px-4 !py-2 text-[14px]"
-                              disabled={huyDangGui === b._id}
-                              onClick={() => setHuyId('')}
-                            >
-                              Không
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn-ghost mt-4 !px-4 !py-2 text-[14px] !text-coralD hover:!border-coral"
-                            onClick={() => {
-                              setHuyId(b._id)
-                              setLoiHuy('')
-                            }}
-                          >
-                            Hủy đơn
-                          </button>
-                        )
+                        <Button
+                          variant="ghost"
+                          className="mt-4 !px-4 !py-2 text-[14px] !text-coralD hover:!border-coral"
+                          onClick={() => setDonChoHuy(b)}
+                        >
+                          Hủy đơn
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -290,45 +260,29 @@ export default function Bookings() {
             })}
           </div>
 
-          {/* Phân trang */}
-          {totalPages > 1 && (
-            <div className="mt-10 flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={page <= 1}
-                onClick={() => goToPage(page - 1)}
-              >
-                Trước
-              </button>
-
-              {pageNumbers.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => goToPage(p)}
-                  className={
-                    p === page
-                      ? 'min-w-[40px] rounded-pill bg-teal px-3 py-2 font-semibold text-white'
-                      : 'min-w-[40px] rounded-pill border border-line px-3 py-2 text-ink hover:bg-sand'
-                  }
-                >
-                  {p}
-                </button>
-              ))}
-
-              <button
-                type="button"
-                className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={page >= totalPages}
-                onClick={() => goToPage(page + 1)}
-              >
-                Sau
-              </button>
-            </div>
-          )}
+          <Pagination page={page} totalPages={totalPages} onPageChange={goToPage} />
         </>
       )}
+
+      {/* Modal xác nhận hủy đơn */}
+      <Modal
+        open={!!donChoHuy}
+        title="Hủy đơn đặt tour"
+        onClose={() => !huyDangGui && setDonChoHuy(null)}
+        actions={
+          <>
+            <Button variant="ghost" className="!px-4 !py-2 text-[14px]" disabled={huyDangGui} onClick={() => setDonChoHuy(null)}>
+              Không
+            </Button>
+            <Button variant="coral" className="!px-4 !py-2 text-[14px]" disabled={huyDangGui} onClick={xacNhanHuy}>
+              {huyDangGui ? 'Đang hủy…' : 'Xác nhận hủy'}
+            </Button>
+          </>
+        }
+      >
+        Bạn chắc chắn muốn hủy đơn <b className="text-ink">{donChoHuy?.bookingCode}</b>
+        {donChoHuy?.tourName ? ` — ${donChoHuy.tourName}` : ''}? Chỗ đã giữ sẽ được hoàn lại cho đợt khởi hành.
+      </Modal>
     </div>
   )
 }

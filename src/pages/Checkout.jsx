@@ -3,6 +3,9 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { createBooking } from '../services/bookingService.js'
 import { formatPrice, formatDate } from '../utils/format.js'
+import Button from '../components/ui/Button.jsx'
+import EmptyState from '../components/ui/EmptyState.jsx'
+import Field from '../components/ui/Field.jsx'
 
 // Regex email — khớp Login/Register
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -37,15 +40,16 @@ export default function Checkout() {
   if (!state?.tourId || !state?.departureDate || !state?.guests) {
     return (
       <div className="wrap py-[56px]">
-        <div className="card-surface mx-auto max-w-[560px] p-8 text-center">
-          <p className="font-heading text-[20px] font-semibold text-ink">Chưa có thông tin đặt tour</p>
-          <p className="mt-2 text-[14.5px] text-muted">
-            Hãy chọn tour và đợt khởi hành trước khi vào bước xác nhận.
-          </p>
-          <Link to="/tours" className="btn-teal mt-5">
-            Về danh sách tour
-          </Link>
-        </div>
+        <EmptyState
+          className="mx-auto max-w-[560px]"
+          title="Chưa có thông tin đặt tour"
+          description="Hãy chọn tour và đợt khởi hành trước khi vào bước xác nhận."
+          action={
+            <Link to="/tours" className="btn-teal">
+              Về danh sách tour
+            </Link>
+          }
+        />
       </div>
     )
   }
@@ -145,54 +149,52 @@ export default function Checkout() {
 
           <h2 className="font-heading text-[19px] font-semibold text-ink">Thông tin liên hệ</h2>
 
-          <label htmlFor="name" className="field-label">Họ và tên</label>
-          <input
+          <Field
             id="name"
             name="name"
+            label="Họ và tên"
             type="text"
             autoComplete="name"
             placeholder="Nguyễn Văn A"
             value={form.name}
             onChange={onChange}
-            className={`field-input ${errors.name ? 'field-input--error' : ''}`}
+            error={errors.name}
           />
-          {errors.name && <div className="field-error">{errors.name}</div>}
 
-          <label htmlFor="phone" className="field-label">Số điện thoại</label>
-          <input
+          <Field
             id="phone"
             name="phone"
+            label="Số điện thoại"
             type="tel"
             autoComplete="tel"
             placeholder="0912345678"
             value={form.phone}
             onChange={onChange}
-            className={`field-input ${errors.phone ? 'field-input--error' : ''}`}
+            error={errors.phone}
           />
-          {errors.phone && <div className="field-error">{errors.phone}</div>}
 
-          <label htmlFor="email" className="field-label">Email</label>
-          <input
+          <Field
             id="email"
             name="email"
+            label="Email"
             type="email"
             autoComplete="email"
             placeholder="you@email.com"
             value={form.email}
             onChange={onChange}
-            className={`field-input ${errors.email ? 'field-input--error' : ''}`}
+            error={errors.email}
           />
-          {errors.email && <div className="field-error">{errors.email}</div>}
 
-          <label htmlFor="note" className="field-label">Ghi chú (không bắt buộc)</label>
-          <textarea
+          <Field
             id="note"
             name="note"
+            label="Ghi chú (không bắt buộc)"
+            as="textarea"
             rows="3"
             placeholder="Yêu cầu đặc biệt: ăn chay, phòng tầng cao, ..."
             value={form.note}
             onChange={onChange}
-            className="field-input resize-none"
+            className="resize-none"
           />
 
           <h2 className="mt-6 font-heading text-[19px] font-semibold text-ink">Phương thức thanh toán</h2>
@@ -224,9 +226,9 @@ export default function Checkout() {
             của bạn được tạo ở trạng thái <b className="text-ink">chờ thanh toán</b>.
           </p>
 
-          <button type="submit" disabled={submitting} className="btn-coral mt-[22px] w-full !py-[13px]">
+          <Button type="submit" variant="coral" disabled={submitting} className="mt-[22px] w-full !py-[13px]">
             {submitting ? 'Đang xử lý…' : 'Xác nhận đặt tour'}
-          </button>
+          </Button>
         </form>
       </div>
     </div>

@@ -1,8 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getTours } from '../services/tourService.js'
 import TourCard from '../components/TourCard.jsx'
 import TourFilters from '../components/TourFilters.jsx'
+import Button from '../components/ui/Button.jsx'
+import Pagination from '../components/ui/Pagination.jsx'
+import Skeleton from '../components/ui/Skeleton.jsx'
+import { useRequestGuard } from '../hooks/useRequestGuard.js'
 
 // Trang danh sách tour — bộ lọc lấy URL query string làm nguồn duy nhất
 export default function TourList() {
@@ -23,18 +27,17 @@ export default function TourList() {
 
   const filters = { q, region, minPrice, maxPrice, days, sort }
 
-  // Đánh số mỗi lần gọi: gõ từ khoá hoặc đổi bộ lọc liên tiếp khiến nhiều request cùng bay,
-  // request cũ về sau sẽ ghi đè kết quả của bộ lọc mới nếu không bỏ qua kết quả lỗi thời.
-  const requestId = useRef(0)
+  // Chống race condition khi đổi bộ lọc liên tiếp — xem hooks/useRequestGuard.js
+  const beginRequest = useRequestGuard()
 
   // Tải danh sách theo bộ lọc hiện tại trên URL
   async function load() {
-    const id = ++requestId.current
+    const isCurrent = beginRequest()
     setLoading(true)
     setError('')
     try {
       const res = await getTours({ page, q, region, minPrice, maxPrice, days, sort })
-      if (id !== requestId.current) return // đã có request mới hơn — bỏ kết quả này
+      if (!isCurrent()) return // đã có request mới hơn — bỏ kết quả này
       if (!res.success) {
         setError(res.message || 'Không tải được danh sách tour.')
         return
@@ -42,10 +45,10 @@ export default function TourList() {
       setTours(res.data)
       setPagination(res.pagination)
     } catch {
-      if (id !== requestId.current) return
+      if (!isCurrent()) return
       setError('Không tải được danh sách tour.')
     } finally {
-      if (id === requestId.current) setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 
@@ -76,7 +79,6 @@ export default function TourList() {
   }
 
   const totalPages = pagination?.totalPages ?? 1
-  const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1)
 
   return (
     <div className="wrap py-[56px]">
@@ -96,13 +98,13 @@ export default function TourList() {
       {loading && (
         <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="overflow-hidden rounded-card bg-sand animate-pulse">
+            <Skeleton key={i} className="overflow-hidden rounded-card">
               <div className="aspect-[4/3] bg-sand" />
               <div className="p-4">
                 <div className="h-4 w-2/3 rounded bg-line" />
                 <div className="mt-3 h-4 w-1/3 rounded bg-line" />
               </div>
-            </div>
+            </Skeleton>
           ))}
         </div>
       )}
@@ -111,9 +113,9 @@ export default function TourList() {
       {!loading && error && (
         <div className="card-surface mt-7 p-6 text-center">
           <p className="text-coralD">{error}</p>
-          <button type="button" className="btn-teal mt-4" onClick={load}>
+          <Button className="mt-4" onClick={load}>
             Thử lại
-          </button>
+          </Button>
         </div>
       )}
 
@@ -121,9 +123,9 @@ export default function TourList() {
       {!loading && !error && tours.length === 0 && (
         <div className="mt-7">
           <p className="text-muted">Không có tour nào phù hợp.</p>
-          <button type="button" className="btn-teal mt-4" onClick={() => setSearchParams({})}>
+          <Button className="mt-4" onClick={() => setSearchParams({})}>
             Xoá bộ lọc
-          </button>
+          </Button>
         </div>
       )}
 
@@ -136,43 +138,7 @@ export default function TourList() {
             ))}
           </div>
 
-          {/* Phân trang */}
-          {totalPages > 1 && (
-            <div className="mt-10 flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={page <= 1}
-                onClick={() => goToPage(page - 1)}
-              >
-                Trước
-              </button>
-
-              {pageNumbers.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => goToPage(p)}
-                  className={
-                    p === page
-                      ? 'min-w-[40px] rounded-pill bg-teal px-3 py-2 font-semibold text-white'
-                      : 'min-w-[40px] rounded-pill border border-line px-3 py-2 text-ink hover:bg-sand'
-                  }
-                >
-                  {p}
-                </button>
-              ))}
-
-              <button
-                type="button"
-                className="btn-ghost disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={page >= totalPages}
-                onClick={() => goToPage(page + 1)}
-              >
-                Sau
-              </button>
-            </div>
-          )}
+          <Pagination page={page} totalPages={totalPages} onPageChange={goToPage} />
         </>
       )}
     </div>

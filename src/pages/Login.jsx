@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import Button from '../components/ui/Button.jsx'
+import Field from '../components/ui/Field.jsx'
 
 // Regex email — khớp app.html
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -64,35 +66,33 @@ export default function Login() {
           </div>
         )}
 
-        <label htmlFor="email" className="field-label">Email</label>
-        <input
+        <Field
           id="email"
           name="email"
+          label="Email"
           type="email"
           autoComplete="email"
           placeholder="you@email.com"
           value={form.email}
           onChange={onChange}
-          className={`field-input ${errors.email ? 'field-input--error' : ''}`}
+          error={errors.email}
         />
-        {errors.email && <div className="field-error">{errors.email}</div>}
 
-        <label htmlFor="password" className="field-label">Mật khẩu</label>
-        <input
+        <Field
           id="password"
           name="password"
+          label="Mật khẩu"
           type="password"
           autoComplete="current-password"
           placeholder="••••••"
           value={form.password}
           onChange={onChange}
-          className={`field-input ${errors.password ? 'field-input--error' : ''}`}
+          error={errors.password}
         />
-        {errors.password && <div className="field-error">{errors.password}</div>}
 
-        <button type="submit" disabled={submitting} className="btn-coral mt-[22px] w-full !py-[13px]">
+        <Button type="submit" variant="coral" disabled={submitting} className="mt-[22px] w-full !py-[13px]">
           {submitting ? 'Đang xử lý…' : 'Đăng nhập'}
-        </button>
+        </Button>
 
         <div className="mt-[18px] text-center text-sm text-muted">
           Chưa có tài khoản?{' '}

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import Button from '../components/ui/Button.jsx'
+import Field from '../components/ui/Field.jsx'
 
 // Regex email — khớp app.html
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -61,61 +63,57 @@ export default function Register() {
           Tạo tài khoản để đặt tour và nhận gợi ý cá nhân hóa
         </p>
 
-        <label htmlFor="name" className="field-label">Họ và tên</label>
-        <input
+        <Field
           id="name"
           name="name"
+          label="Họ và tên"
           type="text"
           autoComplete="name"
           placeholder="Nguyễn Văn A"
           value={form.name}
           onChange={onChange}
-          className={`field-input ${errors.name ? 'field-input--error' : ''}`}
+          error={errors.name}
         />
-        {errors.name && <div className="field-error">{errors.name}</div>}
 
-        <label htmlFor="email" className="field-label">Email</label>
-        <input
+        <Field
           id="email"
           name="email"
+          label="Email"
           type="email"
           autoComplete="email"
           placeholder="you@email.com"
           value={form.email}
           onChange={onChange}
-          className={`field-input ${errors.email ? 'field-input--error' : ''}`}
+          error={errors.email}
         />
-        {errors.email && <div className="field-error">{errors.email}</div>}
 
-        <label htmlFor="password" className="field-label">Mật khẩu</label>
-        <input
+        <Field
           id="password"
           name="password"
+          label="Mật khẩu"
           type="password"
           autoComplete="new-password"
           placeholder="Tối thiểu 6 ký tự"
           value={form.password}
           onChange={onChange}
-          className={`field-input ${errors.password ? 'field-input--error' : ''}`}
+          error={errors.password}
         />
-        {errors.password && <div className="field-error">{errors.password}</div>}
 
-        <label htmlFor="confirm" className="field-label">Xác nhận mật khẩu</label>
-        <input
+        <Field
           id="confirm"
           name="confirm"
+          label="Xác nhận mật khẩu"
           type="password"
           autoComplete="new-password"
           placeholder="Nhập lại mật khẩu"
           value={form.confirm}
           onChange={onChange}
-          className={`field-input ${errors.confirm ? 'field-input--error' : ''}`}
+          error={errors.confirm}
         />
-        {errors.confirm && <div className="field-error">{errors.confirm}</div>}
 
-        <button type="submit" disabled={submitting} className="btn-coral mt-[22px] w-full !py-[13px]">
+        <Button type="submit" variant="coral" disabled={submitting} className="mt-[22px] w-full !py-[13px]">
           {submitting ? 'Đang xử lý…' : 'Đăng ký'}
-        </button>
+        </Button>
 
         <div className="mt-[18px] text-center text-sm text-muted">
           Đã có tài khoản?{' '}

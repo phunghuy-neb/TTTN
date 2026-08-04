@@ -20,3 +20,12 @@ export async function login({ email, password }) {
 export async function register({ name, email, password }) {
   return request('/auth/register', { method: 'POST', body: { name, email, password } })
 }
+
+/**
+ * Lấy thông tin user đang đăng nhập (kèm role) từ token hiện tại.
+ * Token hỏng/hết hạn → api.js tự xóa phiên và phát sự kiện session-expired.
+ * @returns {Promise<{ success: boolean, message?: string, user?: object }>}
+ */
+export async function getMe() {
+  return request('/auth/me', { auth: true })
+}
