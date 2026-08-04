@@ -28,6 +28,8 @@
 | `CANNOT_DEMOTE_SELF` | Admin tự hạ quyền chính mình — chặn cả PATCH /role lẫn PUT (409) |
 | `UPLOAD_ERROR` | File upload sai định dạng/quá 5MB (400) |
 | `NOT_FOUND` | Không có route/tài nguyên (404) |
+| `WRONG_PASSWORD` | Đổi mật khẩu nhưng mật khẩu cũ sai (400) |
+| `AI_UNAVAILABLE` | AI service được cấu hình nhưng chết/timeout 30s (503) |
 | `BAD_REQUEST` / `UNAUTHORIZED` / `CONFLICT` / `REQUEST_ERROR` | Code mặc định bơm theo status khi controller chưa đặt code riêng |
 | `SERVER_ERROR` | Lỗi 5xx |
 | `NETWORK_ERROR` | (chỉ FE) fetch thất bại — mất mạng/server tắt |
@@ -43,6 +45,8 @@
 | POST | `/auth/register` | — | `{ name, email, password }` | `201 { success, message, token, user }` | 400 `VALIDATION_ERROR` / `EMAIL_TAKEN` |
 | POST | `/auth/login` | — | `{ email, password }` | `200 { success, message, token, user }` | 400 `VALIDATION_ERROR`, 401 `INVALID_CREDENTIALS`, 403 `ACCOUNT_LOCKED` |
 | GET | `/auth/me` | ✔ | — | `200 { success, user }` | 401 `AUTH_REQUIRED` / `TOKEN_INVALID` |
+| PUT | `/auth/profile` | ✔ | `{ name?, phone? }` | `200 { success, message, user }` | 400 `VALIDATION_ERROR` |
+| PATCH | `/auth/password` | ✔ | `{ oldPassword, newPassword }` | `200 { success, message }` | 400 `WRONG_PASSWORD` (sai mật khẩu cũ) / `VALIDATION_ERROR` |
 
 `user` = `{ _id, name, email, phone, avatar, role, isActive, createdAt }`.
 
@@ -110,6 +114,24 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 Lỗi chung khu admin: 401 `AUTH_REQUIRED`/`TOKEN_INVALID` (không token/token hỏng), 403 `ADMIN_ONLY` (đăng nhập nhưng không phải admin).
 
 ---
+
+## 🤖 Trợ lý AI (UC-07) — ⚠ ĐANG CHẠY STUB (Batch 5)
+
+**Trạng thái:** BE đang trả lời bằng **stub nội bộ** (từ khóa tiếng Việt + gợi ý tour THẬT từ MongoDB). Nối AI thật của Tuấn Anh **không cần sửa FE**: chỉ set `AI_SERVICE_URL` trong `.env` của BE — adapter duy nhất ở `TTTN_BE/src/services/aiAdapter.js` (đã đánh dấu `TODO(ai)`).
+
+| Method | Path | Auth | Body/Query | Response 2xx | Lỗi |
+|---|---|---|---|---|---|
+| POST | `/chat` | ✔ | `{ message (≤1000 ký tự), tourId? }` — `tourId` nhận cả ObjectId lẫn slug, dùng bơm context tour đang xem | `200 { success, reply, suggestedTours }` | 400 `VALIDATION_ERROR`, **503 `AI_UNAVAILABLE`** (URL cấu hình nhưng AI chết/timeout 30s — KHÔNG rơi về stub để vận hành biết sự cố) |
+| GET | `/chat/history` | ✔ | `?page&limit` | `200 { success, total, page, totalPages, messages[] }` — sắp MỚI → CŨ, mỗi tin `{ _id, role: 'user'\|'assistant', content, tourId, at }` | |
+| DELETE | `/chat/history` | ✔ | — | `200 { success, message }` — xóa toàn bộ hội thoại của mình | |
+
+**Shape CỐ ĐỊNH đã chốt với AI service** (Tuấn Anh code theo đúng cái này):
+```
+POST {AI_SERVICE_URL}/chat
+body    : { message, userName, tourContext | null }
+response: { reply: string, suggestedTours: [{ _id, title, price, image }] }
+```
+`tourContext` = `{ _id, name, basePrice, days, region, itinerarySo }`. Hội thoại lưu ở collection `chatMessages { userId, role, content, tourId, at }` — chỉ lưu khi trả lời thành công.
 
 ## ✅ RESOLVED: departureId (Batch 2 — 04/08/2026)
 

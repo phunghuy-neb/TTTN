@@ -29,3 +29,19 @@ export async function register({ name, email, password }) {
 export async function getMe() {
   return request('/auth/me', { auth: true })
 }
+
+/**
+ * Tự cập nhật hồ sơ (họ tên, SĐT).
+ * @param {{ name?: string, phone?: string }} payload
+ */
+export async function updateProfile(payload) {
+  return request('/auth/profile', { method: 'PUT', body: payload, auth: true })
+}
+
+/**
+ * Tự đổi mật khẩu — sai mật khẩu cũ nhận 400 WRONG_PASSWORD.
+ * @param {{ oldPassword: string, newPassword: string }} payload
+ */
+export async function changePassword(payload) {
+  return request('/auth/password', { method: 'PATCH', body: payload, auth: true })
+}

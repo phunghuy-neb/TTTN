@@ -105,6 +105,24 @@ export default function AdminLayout() {
           </div>
         </header>
 
+        {/* Nav ngang cho mobile — sidebar ẩn dưới md nên cần lối đi thay thế */}
+        <nav className="flex gap-1.5 overflow-x-auto border-b border-line bg-white px-3 py-2 md:hidden">
+          {NAV.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                `shrink-0 rounded-pill px-3.5 py-1.5 text-[13.5px] font-semibold transition ${
+                  isActive ? 'bg-teal text-white' : 'text-muted hover:bg-sand'
+                }`
+              }
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+
         <main className="flex-1 p-5 md:p-7">
           <Outlet />
         </main>

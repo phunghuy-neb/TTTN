@@ -2,16 +2,19 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { getTours } from '../services/tourService.js'
 import TourCard from '../components/TourCard.jsx'
+import Button from '../components/ui/Button.jsx'
+import Skeleton from '../components/ui/Skeleton.jsx'
+import { emitOpenChat } from '../components/chat/chatEvents.js'
 
 // Thẻ skeleton lúc đang tải — giữ đúng tỉ lệ TourCard để bố cục không nhảy
 function SkeletonCard() {
   return (
     <div className="card-surface overflow-hidden">
-      <div className="aspect-[4/3] animate-pulse bg-sand" />
+      <Skeleton className="aspect-[4/3]" />
       <div className="p-4">
-        <div className="h-4 w-1/2 animate-pulse rounded bg-sand" />
-        <div className="mt-3 h-5 w-3/4 animate-pulse rounded bg-sand" />
-        <div className="mt-4 h-6 w-2/5 animate-pulse rounded bg-sand" />
+        <Skeleton className="h-4 w-1/2 rounded" />
+        <Skeleton className="mt-3 h-5 w-3/4 rounded" />
+        <Skeleton className="mt-4 h-6 w-2/5 rounded" />
       </div>
     </div>
   )
@@ -33,9 +36,9 @@ function ErrorState({ message, onRetry }) {
   return (
     <div className="card-surface mt-7 p-6 text-center">
       <p className="text-coralD">{message}</p>
-      <button type="button" className="btn-teal mt-4" onClick={onRetry}>
+      <Button className="mt-4" onClick={onRetry}>
         Thử lại
-      </button>
+      </Button>
     </div>
   )
 }
@@ -187,10 +190,9 @@ export default function Home() {
           <p className="mx-auto mt-3 max-w-[560px] text-[15px] text-muted">
             Trợ lý ảo VietVoyage gợi ý hành trình phù hợp với ngân sách và sở thích của bạn chỉ trong ít phút.
           </p>
-          {/* Nút chưa gắn hành động — nối chatbot ở Tuần 5 */}
-          <button type="button" className="btn-teal mt-6">
+          <Button className="mt-6" onClick={emitOpenChat}>
             Hỏi trợ lý AI
-          </button>
+          </Button>
         </div>
       </section>
     </div>

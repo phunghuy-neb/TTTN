@@ -7,6 +7,7 @@ import Button from '../components/ui/Button.jsx'
 import EmptyState from '../components/ui/EmptyState.jsx'
 import Skeleton from '../components/ui/Skeleton.jsx'
 import { useRequestGuard } from '../hooks/useRequestGuard.js'
+import { emitOpenChat } from '../components/chat/chatEvents.js'
 
 // Khung xương lúc đang tải
 function DetailSkeleton() {
@@ -368,7 +369,9 @@ export default function TourDetail() {
                 Trợ lý AI có thể tư vấn thời điểm đi, chi phí và điểm đến tương tự.
               </p>
             </div>
-            <Button variant="coral">Hỏi trợ lý AI về tour này</Button>
+            <Button variant="coral" onClick={emitOpenChat}>
+              Hỏi trợ lý AI về tour này
+            </Button>
           </div>
         </div>
       )}

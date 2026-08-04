@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { AuthProvider } from './context/AuthContext.jsx'
 import { PrivateRoute, GuestRoute } from './routes/PrivateRoute.jsx'
 import { AdminRoute } from './routes/AdminRoute.jsx'
@@ -24,49 +25,51 @@ import NotFound from './pages/NotFound.jsx'
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <ToastProvider>
-          <Routes>
-            {/* Khu client — Header + Footer dùng chung */}
-            <Route element={<Layout />}>
-              <Route index element={<Home />} />
-              <Route path="tours" element={<TourList />} />
-              <Route path="tour/:slug" element={<TourDetail />} />
+    <ErrorBoundary>
+      <AuthProvider>
+        <BrowserRouter>
+          <ToastProvider>
+            <Routes>
+              {/* Khu client — Header + Footer dùng chung */}
+              <Route element={<Layout />}>
+                <Route index element={<Home />} />
+                <Route path="tours" element={<TourList />} />
+                <Route path="tour/:slug" element={<TourDetail />} />
 
-              {/* Chỉ dành cho khách chưa đăng nhập */}
-              <Route element={<GuestRoute />}>
-                <Route path="login" element={<Login />} />
-                <Route path="register" element={<Register />} />
-              </Route>
+                {/* Chỉ dành cho khách chưa đăng nhập */}
+                <Route element={<GuestRoute />}>
+                  <Route path="login" element={<Login />} />
+                  <Route path="register" element={<Register />} />
+                </Route>
 
-              {/* Yêu cầu đăng nhập */}
-              <Route element={<PrivateRoute />}>
-                <Route path="profile" element={<Profile />} />
-                <Route path="checkout" element={<Checkout />} />
-                <Route path="payment" element={<Payment />} />
-                <Route path="bookings" element={<Bookings />} />
-              </Route>
+                {/* Yêu cầu đăng nhập */}
+                <Route element={<PrivateRoute />}>
+                  <Route path="profile" element={<Profile />} />
+                  <Route path="checkout" element={<Checkout />} />
+                  <Route path="payment" element={<Payment />} />
+                  <Route path="bookings" element={<Bookings />} />
+                </Route>
 
-              <Route path="403" element={<Forbidden />} />
-              <Route path="*" element={<NotFound />} />
-            </Route>
-
-            {/* Khu admin — layout riêng, yêu cầu đăng nhập + role admin */}
-            <Route element={<AdminRoute />}>
-              <Route path="admin" element={<AdminLayout />}>
-                <Route index element={<Dashboard />} />
-                <Route path="tours" element={<AdminTours />} />
-                <Route path="tours/new" element={<AdminTourForm />} />
-                <Route path="tours/:id/edit" element={<AdminTourForm />} />
-                <Route path="bookings" element={<AdminBookings />} />
-                <Route path="users" element={<AdminUsers />} />
+                <Route path="403" element={<Forbidden />} />
                 <Route path="*" element={<NotFound />} />
               </Route>
-            </Route>
-          </Routes>
-        </ToastProvider>
-      </BrowserRouter>
-    </AuthProvider>
+
+              {/* Khu admin — layout riêng, yêu cầu đăng nhập + role admin */}
+              <Route element={<AdminRoute />}>
+                <Route path="admin" element={<AdminLayout />}>
+                  <Route index element={<Dashboard />} />
+                  <Route path="tours" element={<AdminTours />} />
+                  <Route path="tours/new" element={<AdminTourForm />} />
+                  <Route path="tours/:id/edit" element={<AdminTourForm />} />
+                  <Route path="bookings" element={<AdminBookings />} />
+                  <Route path="users" element={<AdminUsers />} />
+                  <Route path="*" element={<NotFound />} />
+                </Route>
+              </Route>
+            </Routes>
+          </ToastProvider>
+        </BrowserRouter>
+      </AuthProvider>
+    </ErrorBoundary>
   )
 }

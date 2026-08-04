@@ -96,8 +96,22 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
+  // Cập nhật user sau khi tự sửa hồ sơ — đồng bộ cả state lẫn localStorage
+  const updateUser = (userMoi) => {
+    setUser(userMoi)
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY)
+      const saved = raw ? JSON.parse(raw) : null
+      if (saved?.token) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...saved, user: userMoi }))
+      }
+    } catch {
+      // localStorage hỏng — bỏ qua, state trong bộ nhớ đã đúng
+    }
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   )
