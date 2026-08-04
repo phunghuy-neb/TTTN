@@ -51,7 +51,17 @@ const BookingSchema = new mongoose.Schema(
       min: 0,
     },
 
-    // Ngày khởi hành đã chọn
+    // Đợt khởi hành đã đặt — tham chiếu departures._id trong Tour (khóa ổn định,
+    // sống sót khi admin đổi ngày đợt). Đơn cũ migrate không khớp được đợt = null
+    // (xem scripts/migrate-departures.mjs + C:\TTTN\orphan-bookings.json).
+    departureId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+      index: true,
+    },
+
+    // Ngày khởi hành — bản sao denormalize để hiển thị/lọc; nguồn sự thật về
+    // "đơn thuộc đợt nào" là departureId. GIỮ NGUYÊN cho tới khi FE ổn định.
     departureDate: {
       type: Date,
       required: true,

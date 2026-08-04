@@ -17,14 +17,14 @@ const ItineraryDaySchema = new mongoose.Schema(
 )
 
 // ── Sub-schema: Một đợt khởi hành ───────────────────────────
-const DepartureSchema = new mongoose.Schema(
-  {
-    date: { type: Date, required: true },
-    availableSlots: { type: Number, required: true, min: 0 },
-    price: { type: Number, required: true, min: 0 },
-  },
-  { _id: false }
-)
+// _id do Mongoose tự sinh — khóa ổn định để Booking tham chiếu (departureId),
+// thay cho khớp chuỗi/khoảng ngày vốn vỡ khi admin đổi ngày của đợt.
+const DepartureSchema = new mongoose.Schema({
+  date: { type: Date, required: true },
+  totalSlots: { type: Number, required: true, min: 0 },
+  availableSlots: { type: Number, required: true, min: 0 },
+  price: { type: Number, required: true, min: 0 },
+})
 
 // ── Sub-schema: Đánh giá của khách hàng ─────────────────────
 const ReviewSchema = new mongoose.Schema(

@@ -210,6 +210,9 @@ export const updateTour = async (req, res) => {
     }
 
     if (typeof body.itinerary === 'string') body.itinerary = JSON.parse(body.itinerary)
+    // LƯU Ý HỢP ĐỒNG: body.departures thay thế NGUYÊN MẢNG. Đợt đã tồn tại PHẢI
+    // gửi kèm _id cũ — thiếu _id Mongoose sẽ sinh id mới và mọi booking đang trỏ
+    // tới đợt đó (booking.departureId) thành mồ côi. Đợt mới thì không gửi _id.
     if (typeof body.departures === 'string') body.departures = JSON.parse(body.departures)
     if (typeof body.tags === 'string') body.tags = JSON.parse(body.tags)
 

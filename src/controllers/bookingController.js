@@ -13,6 +13,7 @@ const formatBooking = (b) => ({
   tour: b.tour,
   tourName: b.tourName,
   unitPrice: b.unitPrice,
+  departureId: b.departureId,
   departureDate: b.departureDate,
   guests: b.guests,
   totalPrice: b.totalPrice,
@@ -34,13 +35,15 @@ const formatBooking = (b) => ({
 // ============================================================
 export const createBooking = async (req, res) => {
   try {
-    const { tourId, departureDate, guests, contact, paymentMethod, note } = req.body
+    const { tourId, departureId, guests, contact, paymentMethod, note } = req.body
 
-    // 1. Validate đầu vào cơ bản
-    if (!tourId || !departureDate || !guests || !contact) {
+    // 1. Validate đầu vào cơ bản — đợt khởi hành định danh bằng departureId
+    // (departures._id trong Tour), không còn nhận/khớp chuỗi ngày.
+    if (!tourId || !departureId || !guests || !contact) {
       return res.status(400).json({
         success: false,
-        message: 'Vui lòng cung cấp đầy đủ: tourId, departureDate, guests, contact.',
+        message: 'Vui lòng cung cấp đầy đủ: tourId, departureId, guests, contact.',
+        code: 'VALIDATION_ERROR',
       })
     }
     if (!contact.name || !contact.phone || !contact.email) {
@@ -67,17 +70,13 @@ export const createBooking = async (req, res) => {
       })
     }
 
-    // 3. Tìm đúng đợt khởi hành theo ngày
-    const depDate = new Date(departureDate)
-    const departure = tour.departures.find((d) => {
-      const dDate = new Date(d.date)
-      return dDate.toDateString() === depDate.toDateString()
-    })
-
+    // 3. Tìm đợt khởi hành theo _id — khóa ổn định, sống sót khi admin đổi ngày
+    const departure = tour.departures.id(departureId)
     if (!departure) {
       return res.status(400).json({
         success: false,
-        message: 'Không tìm thấy đợt khởi hành vào ngày đã chọn.',
+        message: 'Không tìm thấy đợt khởi hành đã chọn. Vui lòng tải lại trang.',
+        code: 'DEPARTURE_NOT_FOUND',
       })
     }
 
@@ -86,42 +85,37 @@ export const createBooking = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Đợt khởi hành này đã qua. Vui lòng chọn đợt khác.',
+        code: 'DEPARTURE_PAST',
       })
     }
 
-    // 4. Kiểm tra đủ chỗ trống
-    if (departure.availableSlots < guestCount) {
-      return res.status(400).json({
-        success: false,
-        message: `Đợt khởi hành chỉ còn ${departure.availableSlots} chỗ. Vui lòng giảm số khách hoặc chọn đợt khác.`,
-      })
-    }
-
-    // 5. Tính giá tiền: unitPrice lấy từ đợt khởi hành cụ thể
+    // 4. Tính giá tiền: unitPrice lấy từ đợt khởi hành cụ thể
     const unitPrice = departure.price
     const totalPrice = unitPrice * guestCount
 
-    // 6. Trừ chỗ TRƯỚC khi tạo đơn, bằng một cập nhật nguyên tử có điều kiện.
-    // Điều kiện $gte nằm ngay trong query nên hai request đồng thời không thể
-    // cùng trừ vào chỗ cuối — MongoDB chỉ cho một request khớp điều kiện.
-    const ketQuaTruCho = await Tour.updateOne(
+    // 5. Trừ chỗ TRƯỚC khi tạo đơn, bằng một cập nhật nguyên tử theo departureId.
+    // Điều kiện _id + $gte nằm trong CÙNG một $elemMatch nên hai request đồng thời
+    // không thể cùng trừ vào chỗ cuối — MongoDB chỉ cho một request khớp điều kiện.
+    const ketQuaTruCho = await Tour.findOneAndUpdate(
       {
         _id: tour._id,
         departures: {
-          $elemMatch: { date: departure.date, availableSlots: { $gte: guestCount } },
+          $elemMatch: { _id: departure._id, availableSlots: { $gte: guestCount } },
         },
       },
-      { $inc: { 'departures.$.availableSlots': -guestCount } }
+      { $inc: { 'departures.$.availableSlots': -guestCount } },
+      { new: true }
     )
 
-    if (ketQuaTruCho.modifiedCount === 0) {
-      return res.status(400).json({
+    if (!ketQuaTruCho) {
+      return res.status(409).json({
         success: false,
-        message: 'Đợt khởi hành vừa hết chỗ. Vui lòng chọn đợt khác hoặc giảm số khách.',
+        message: `Đợt khởi hành không còn đủ ${guestCount} chỗ. Vui lòng giảm số khách hoặc chọn đợt khác.`,
+        code: 'SLOT_UNAVAILABLE',
       })
     }
 
-    // 7. Tạo đơn đặt tour (snapshot tourName và unitPrice)
+    // 6. Tạo đơn đặt tour (snapshot tourName, unitPrice và departureDate để hiển thị)
     let booking
     try {
       // bookingCode sinh từ 7 số cuối timestamp + 4 ký tự ngẫu nhiên nên vẫn có
@@ -133,7 +127,8 @@ export const createBooking = async (req, res) => {
             tour: tour._id,
             tourName: tour.name,
             unitPrice,
-            departureDate: depDate,
+            departureId: departure._id,
+            departureDate: departure.date,
             guests: guestCount,
             totalPrice,
             contact,
@@ -148,9 +143,9 @@ export const createBooking = async (req, res) => {
         }
       }
     } catch (err) {
-      // Tạo đơn hỏng thì phải trả chỗ lại, nếu không số chỗ bị hụt vĩnh viễn
+      // Tạo đơn hỏng thì phải trả chỗ lại theo departureId, nếu không số chỗ bị hụt vĩnh viễn
       await Tour.updateOne(
-        { _id: tour._id, 'departures.date': departure.date },
+        { _id: tour._id, 'departures._id': departure._id },
         { $inc: { 'departures.$.availableSlots': guestCount } }
       )
       throw err
@@ -295,24 +290,24 @@ export const cancelBooking = async (req, res) => {
       })
     }
 
-    // Hoàn lại số chỗ trống vào đợt khởi hành. So khớp theo NGÀY thay vì theo
-    // mốc thời gian tuyệt đối, tránh trượt khi giờ/phút/giây lệch nhau giữa
-    // lúc tạo đơn và lúc hủy.
-    const dauNgay = new Date(daHuy.departureDate)
-    dauNgay.setHours(0, 0, 0, 0)
-    const cuoiNgay = new Date(daHuy.departureDate)
-    cuoiNgay.setHours(23, 59, 59, 999)
-
-    const ketQuaHoan = await Tour.updateOne(
-      {
-        _id: daHuy.tour,
-        departures: { $elemMatch: { date: { $gte: dauNgay, $lte: cuoiNgay } } },
-      },
-      { $inc: { 'departures.$.availableSlots': daHuy.guests } }
-    )
-
-    if (ketQuaHoan.modifiedCount === 0) {
-      console.error('[cancelBooking] Không hoàn được chỗ cho đơn', daHuy.bookingCode)
+    // Hoàn lại số chỗ trống theo departureId — khóa ổn định, không phụ thuộc ngày
+    // nên admin đổi ngày đợt cũng không làm bước hoàn chỗ trượt.
+    if (daHuy.departureId) {
+      const ketQuaHoan = await Tour.updateOne(
+        { _id: daHuy.tour, 'departures._id': daHuy.departureId },
+        { $inc: { 'departures.$.availableSlots': daHuy.guests } }
+      )
+      if (ketQuaHoan.modifiedCount === 0) {
+        console.error('[cancelBooking] Không hoàn được chỗ cho đơn', daHuy.bookingCode)
+      }
+    } else {
+      // Đơn cũ mồ côi (migrate không khớp được đợt) — không biết hoàn vào đâu,
+      // KHÔNG đoán theo ngày; chỉ ghi log để xử lý tay nếu cần.
+      console.error(
+        '[cancelBooking] Đơn',
+        daHuy.bookingCode,
+        'không có departureId (xem C:\\TTTN\\orphan-bookings.json) — bỏ qua hoàn chỗ.'
+      )
     }
 
     res.json({
@@ -415,21 +410,24 @@ export const updateBookingStatus = async (req, res) => {
       if (txnRef) booking.txnRef = txnRef
     }
 
-    // Nếu Admin hủy một đơn đang pending → hoàn lại chỗ trống.
-    // So khớp theo NGÀY như cancelBooking, tránh trượt khi giờ/phút/giây lệch.
+    // Nếu Admin hủy một đơn đang pending → hoàn lại chỗ trống theo departureId
+    // (giống cancelBooking — không khớp ngày nữa; đơn mồ côi chỉ ghi log).
     if (status === 'cancelled' && prevStatus === 'pending_payment') {
-      const dauNgay = new Date(booking.departureDate)
-      dauNgay.setHours(0, 0, 0, 0)
-      const cuoiNgay = new Date(booking.departureDate)
-      cuoiNgay.setHours(23, 59, 59, 999)
-
-      await Tour.updateOne(
-        {
-          _id: booking.tour,
-          departures: { $elemMatch: { date: { $gte: dauNgay, $lte: cuoiNgay } } },
-        },
-        { $inc: { 'departures.$.availableSlots': booking.guests } }
-      )
+      if (booking.departureId) {
+        const ketQuaHoan = await Tour.updateOne(
+          { _id: booking.tour, 'departures._id': booking.departureId },
+          { $inc: { 'departures.$.availableSlots': booking.guests } }
+        )
+        if (ketQuaHoan.modifiedCount === 0) {
+          console.error('[updateBookingStatus] Không hoàn được chỗ cho đơn', booking.bookingCode)
+        }
+      } else {
+        console.error(
+          '[updateBookingStatus] Đơn',
+          booking.bookingCode,
+          'không có departureId (xem C:\\TTTN\\orphan-bookings.json) — bỏ qua hoàn chỗ.'
+        )
+      }
     }
 
     await booking.save()
