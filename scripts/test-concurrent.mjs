@@ -2,9 +2,14 @@
 //  scripts/test-concurrent.mjs — Bằng chứng chống race condition
 //
 //  Kịch bản: thêm một đợt khởi hành TEST còn đúng 5 chỗ vào một tour
-//  published, bắn 20 request đặt 1 chỗ SONG SONG qua API thật.
+//  published, rồi cho 20 KHÁCH KHÁC NHAU cùng bấm đặt 1 chỗ SONG SONG.
 //  Kỳ vọng: đúng 5 thành công, 15 nhận 409 SLOT_UNAVAILABLE,
 //  availableSlots trong DB = 0 (không âm, không hụt).
+//
+//  VÌ SAO PHẢI LÀ 20 KHÁCH KHÁC NHAU: từ Batch 8, Backend có khóa chống
+//  đơn trùng (idemKey) — cùng một người gửi nhiều yêu cầu giống hệt trong
+//  10 giây chỉ tính là MỘT lần đặt. Dùng chung một tài khoản sẽ đo nhầm
+//  cơ chế chống-trùng thay vì cơ chế chống-oversell.
 //
 //  Yêu cầu: Backend đang chạy (npm run dev) + MongoDB.
 //  Chạy:  node scripts/test-concurrent.mjs
@@ -16,24 +21,25 @@ import mongoose from 'mongoose'
 
 const BASE = `http://localhost:${process.env.PORT || 5000}/api`
 const KEEP = process.argv.includes('--keep')
-const EMAIL = 'concurrent.test@test.local'
+const DUOI_EMAIL = '@concurrent.test'
 const MAT_KHAU = 'matkhau123'
 const SO_CHO = 5
 const SO_REQUEST = 20
 
-async function dangNhap() {
-  // Đăng ký nếu chưa có (400 EMAIL_TAKEN thì thôi), rồi đăng nhập lấy token
+// Tạo (hoặc dùng lại) một tài khoản khách và trả về token
+async function taoKhach(i) {
+  const email = `khach${i}${DUOI_EMAIL}`
   await fetch(`${BASE}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: 'Concurrent Test', email: EMAIL, password: MAT_KHAU }),
+    body: JSON.stringify({ name: `Khách Đồng Thời ${i}`, email, password: MAT_KHAU }),
   }).catch(() => {})
   const res = await fetch(`${BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: EMAIL, password: MAT_KHAU }),
+    body: JSON.stringify({ email, password: MAT_KHAU }),
   }).then((r) => r.json())
-  if (!res.token) throw new Error('Không đăng nhập được user test: ' + res.message)
+  if (!res.token) throw new Error(`Không đăng nhập được ${email}: ${res.message}`)
   return res.token
 }
 
@@ -71,12 +77,14 @@ async function main() {
   )
   console.log(`Đã gắn đợt TEST ${depId} (${SO_CHO} chỗ) vào tour "${tour.name}".`)
 
-  const token = await dangNhap()
+  // Mỗi request một khách riêng — xem ghi chú ở đầu file
+  console.log(`Chuẩn bị ${SO_REQUEST} tài khoản khách...`)
+  const tokens = await Promise.all(Array.from({ length: SO_REQUEST }, (_, i) => taoKhach(i + 1)))
 
-  // 2. Bắn 20 request đặt 1 chỗ SONG SONG
-  console.log(`Bắn ${SO_REQUEST} request đặt 1 chỗ song song...`)
+  // 2. Cho 20 khách cùng bấm đặt 1 chỗ SONG SONG
+  console.log(`Bắn ${SO_REQUEST} request đặt 1 chỗ song song (20 khách khác nhau)...`)
   const ketQua = await Promise.all(
-    Array.from({ length: SO_REQUEST }, (_, i) =>
+    tokens.map((token, i) =>
       fetch(`${BASE}/bookings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -84,7 +92,7 @@ async function main() {
           tourId: String(tour._id),
           departureId: String(depId),
           guests: 1,
-          contact: { name: `Khách ${i + 1}`, phone: '0900000001', email: EMAIL },
+          contact: { name: `Khách ${i + 1}`, phone: '0900000001', email: `khach${i + 1}${DUOI_EMAIL}` },
           paymentMethod: 'later',
         }),
       }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
@@ -112,15 +120,14 @@ async function main() {
     depSau?.availableSlots === 0
   console.log(dat ? '✔ PASS — không oversell, không hụt chỗ.' : '✘ FAIL — xem lại logic trừ chỗ!')
 
-  // 4. Dọn dữ liệu test (trừ khi --keep) — dọn cả USER test để DB không còn rác @test.local
+  // 4. Dọn dữ liệu test (trừ khi --keep) — dọn cả 20 USER test để DB không còn rác
   if (!KEEP) {
-    const idDon = thanhCong.map((k) => k.body.booking?._id).filter(Boolean)
-    if (idDon.length) {
-      await bookingsCol.deleteMany({ _id: { $in: idDon.map((id) => new mongoose.Types.ObjectId(id)) } })
-    }
+    const usersCol = mongoose.connection.db.collection('users')
+    const khachTest = await usersCol.find({ email: new RegExp(`${DUOI_EMAIL}$`) }).toArray()
+    const rBk = await bookingsCol.deleteMany({ user: { $in: khachTest.map((u) => u._id) } })
     await toursCol.updateOne({ _id: tour._id }, { $pull: { departures: { _id: depId } } })
-    await mongoose.connection.db.collection('users').deleteOne({ email: EMAIL })
-    console.log(`Đã dọn: ${idDon.length} đơn test + đợt TEST + user ${EMAIL}.`)
+    const rUser = await usersCol.deleteMany({ email: new RegExp(`${DUOI_EMAIL}$`) })
+    console.log(`Đã dọn: ${rBk.deletedCount} đơn test + đợt TEST + ${rUser.deletedCount} tài khoản khách test.`)
   } else {
     console.log('--keep: giữ nguyên dữ liệu test để soi tay.')
   }

@@ -29,6 +29,13 @@ const formatBooking = (b) => ({
   updatedAt: b.updatedAt,
 })
 
+// Cửa sổ chống đơn trùng: hai yêu cầu đặt giống hệt nhau trong khoảng này được coi
+// là MỘT lần đặt bị gửi lặp (double-click, mạng chậm rồi bấm lại, F5 gửi lại form).
+const CUA_SO_TRUNG_MS = 10_000
+
+// Trạng thái đơn còn giữ chỗ — dùng cho cả kiểm trùng lẫn thống kê
+const TRANG_THAI_GIU_CHO = ['pending_payment', 'paid', 'completed']
+
 // Máy trạng thái đơn (Batch 4) — NGHIÊM NGẶT, không cho nhảy tùy ý.
 // completed/cancelled là trạng thái cuối, không đổi được nữa.
 const CHUYEN_TRANG_THAI = {
@@ -100,6 +107,33 @@ export const createBooking = async (req, res) => {
       })
     }
 
+    // 2b. Chống đơn trùng do double-submit (mạng chậm, bấm 2 lần, gửi lại request).
+    // Hai lớp bổ trợ nhau:
+    //   - Lớp này (kiểm trước): bắt các lần gửi lặp TUẦN TỰ, kể cả khi hai lần rơi
+    //     hai bên mốc chia ô thời gian của idemKey.
+    //   - Unique index `idemKey` lúc tạo đơn (bước 6): chốt thật cho các request bay
+    //     SONG SONG, thứ mà kiểm-rồi-ghi không bao giờ chặn được.
+    // Trùng thì trả lại CHÍNH ĐƠN ĐÓ (200), không trả lỗi: người dùng bấm hai lần
+    // không phải lỗi của họ, và báo lỗi sẽ khiến họ tưởng đặt hỏng rồi đặt lại lần nữa.
+    const idemKey = `${req.user._id}:${tour._id}:${departureId}:${Math.floor(Date.now() / CUA_SO_TRUNG_MS)}`
+
+    const donVuaTao = await Booking.findOne({
+      user: req.user._id,
+      tour: tour._id,
+      departureId,
+      status: { $in: TRANG_THAI_GIU_CHO },
+      createdAt: { $gte: new Date(Date.now() - CUA_SO_TRUNG_MS) },
+    }).sort('-createdAt')
+
+    if (donVuaTao) {
+      return res.status(200).json({
+        success: true,
+        message: `Đặt tour thành công! Mã đơn: ${donVuaTao.bookingCode}`,
+        booking: formatBooking(donVuaTao),
+        duplicate: true, // để FE/log biết đây là lần gửi lặp, không phải đơn mới
+      })
+    }
+
     // 3. Tìm đợt khởi hành theo _id — khóa ổn định, sống sót khi admin đổi ngày
     const departure = tour.departures.id(departureId)
     if (!departure) {
@@ -147,6 +181,7 @@ export const createBooking = async (req, res) => {
 
     // 6. Tạo đơn đặt tour (snapshot tourName, unitPrice và departureDate để hiển thị)
     let booking
+    let laDonTrung = false
     try {
       // bookingCode sinh từ 7 số cuối timestamp + 4 ký tự ngẫu nhiên nên vẫn có
       // xác suất trùng rất nhỏ — gặp lỗi trùng khóa E11000 thì thử lại tối đa 3 lần
@@ -165,9 +200,20 @@ export const createBooking = async (req, res) => {
             paymentMethod: paymentMethod || null,
             note: note || '',
             status: 'pending_payment',
+            idemKey,
           })
           break
         } catch (err) {
+          // Trùng idemKey = một request song song đã thắng cuộc đua → KHÔNG phải lỗi:
+          // trả về chính đơn của người thắng. Đây mới là chốt chặn thật cho trường hợp
+          // nhiều request bay cùng lúc (pre-check ở bước 2b không chặn được vì cả
+          // năm request cùng đọc "chưa có đơn" trước khi ai kịp ghi).
+          if (err.code === 11000 && err.keyPattern?.idemKey) {
+            laDonTrung = true
+            booking = await Booking.findOne({ idemKey })
+            break
+          }
+          // Trùng bookingCode → sinh mã khác và thử lại
           if (err.code === 11000 && lanThu < 3) continue
           throw err
         }
@@ -179,6 +225,21 @@ export const createBooking = async (req, res) => {
         { $inc: { 'departures.$.availableSlots': guestCount } }
       )
       throw err
+    }
+
+    // Request thua cuộc đua: chỗ vừa trừ ở bước 5 phải trả lại, nếu không mỗi lần
+    // bấm trùng lại ăn mất một suất mà chẳng có đơn nào tương ứng.
+    if (laDonTrung) {
+      await Tour.updateOne(
+        { _id: tour._id, 'departures._id': departure._id },
+        { $inc: { 'departures.$.availableSlots': guestCount } }
+      )
+      return res.status(200).json({
+        success: true,
+        message: `Đặt tour thành công! Mã đơn: ${booking.bookingCode}`,
+        booking: formatBooking(booking),
+        duplicate: true,
+      })
     }
 
     res.status(201).json({

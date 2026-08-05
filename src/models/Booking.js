@@ -126,6 +126,16 @@ const BookingSchema = new mongoose.Schema(
       default: '',
     },
 
+    // Khóa chống đơn trùng (idempotency): `user:tour:departure:ô-thời-gian-10-giây`.
+    // Kiểm-rồi-ghi trong controller không chặn được request SONG SONG (cả năm cùng
+    // thấy "chưa có đơn" rồi cùng tạo), nên chốt thật nằm ở unique index dưới đây —
+    // MongoDB chỉ cho một request thắng, các request còn lại nhận E11000 và được trả
+    // về chính đơn đã thắng. Đơn cũ (trước Batch 8) không có field này nên dùng
+    // partial index để không vướng.
+    idemKey: {
+      type: String,
+    },
+
     // Lịch sử đổi trạng thái (Batch 4) — phục vụ báo cáo/audit.
     // byUserId: người thực hiện (admin đổi trạng thái, hoặc chính khách khi tự hủy).
     statusHistory: [
@@ -147,6 +157,11 @@ const BookingSchema = new mongoose.Schema(
 
 // ── Index tối ưu truy vấn ─────────────────────────────────────
 BookingSchema.index({ user: 1, createdAt: -1 })
+// Unique CHỈ áp cho document thực sự có idemKey (đơn tạo từ Batch 8 trở đi)
+BookingSchema.index(
+  { idemKey: 1 },
+  { unique: true, partialFilterExpression: { idemKey: { $type: 'string' } } }
+)
 BookingSchema.index({ tour: 1 })
 BookingSchema.index({ status: 1 })
 // bookingCode: unique index đã tạo tự động qua { unique: true } trong field definition

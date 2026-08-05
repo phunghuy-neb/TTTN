@@ -47,7 +47,8 @@ Yêu cầu: MongoDB chạy local (service `mongod`), Node 18+ (khuyến nghị 2
 | `node scripts/set-admin.mjs <email>` | Cấp quyền admin cho một tài khoản |
 | `node scripts/migrate-departures.mjs [--dry-run]` | Migration Batch 2: cấp `_id`/`totalSlots` cho đợt khởi hành, backfill `booking.departureId` (idempotent; đơn không khớp ghi ra `C:\TTTN\orphan-bookings.json`) |
 | `node scripts/rollback-departures.mjs` | Gỡ migration trên (dùng kèm quay code) |
-| `node scripts/test-concurrent.mjs` | Bằng chứng chống oversell: đợt 5 chỗ + 20 request song song → đúng 5 thành công, 15 nhận 409 `SLOT_UNAVAILABLE` |
+| `node scripts/test-concurrent.mjs` | Bằng chứng chống oversell: đợt 5 chỗ + **20 khách khác nhau** đặt song song → đúng 5 thành công, 15 nhận 409 `SLOT_UNAVAILABLE` (phải là 20 tài khoản riêng, vì khóa chống đơn trùng gộp các lần gửi lặp của cùng một người) |
+| `node scripts/verify-charts.mjs` | Kiểm **hình học** biểu đồ Dashboard ở 375/768/1440px: mỗi hình phải có `d` khác rỗng, bbox > 0 và cột lớn nhất chạm ≥80% vùng vẽ. Cần một Chrome mở cổng debug 9222 (hướng dẫn ở đầu file) |
 | `node scripts/cleanup-demo.mjs [--dry-run]` | Dọn dữ liệu kiểm thử (ghi bản ghi bị xóa ra `C:\TTTN\deleted-batch6.json`, kiểm bất biến slot sau khi dọn) |
 | `node scripts/backfillSearchText.mjs` | Tính lại trường tìm kiếm không dấu cho tour cũ |
 
