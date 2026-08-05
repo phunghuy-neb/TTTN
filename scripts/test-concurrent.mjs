@@ -112,14 +112,15 @@ async function main() {
     depSau?.availableSlots === 0
   console.log(dat ? '✔ PASS — không oversell, không hụt chỗ.' : '✘ FAIL — xem lại logic trừ chỗ!')
 
-  // 4. Dọn dữ liệu test (trừ khi --keep)
+  // 4. Dọn dữ liệu test (trừ khi --keep) — dọn cả USER test để DB không còn rác @test.local
   if (!KEEP) {
     const idDon = thanhCong.map((k) => k.body.booking?._id).filter(Boolean)
     if (idDon.length) {
       await bookingsCol.deleteMany({ _id: { $in: idDon.map((id) => new mongoose.Types.ObjectId(id)) } })
     }
     await toursCol.updateOne({ _id: tour._id }, { $pull: { departures: { _id: depId } } })
-    console.log(`Đã dọn: ${idDon.length} đơn test + đợt TEST khỏi tour.`)
+    await mongoose.connection.db.collection('users').deleteOne({ email: EMAIL })
+    console.log(`Đã dọn: ${idDon.length} đơn test + đợt TEST + user ${EMAIL}.`)
   } else {
     console.log('--keep: giữ nguyên dữ liệu test để soi tay.')
   }
