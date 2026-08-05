@@ -11,8 +11,7 @@ import Field from '../../components/ui/Field.jsx'
 import Skeleton from '../../components/ui/Skeleton.jsx'
 import { useToast } from '../../components/ui/Toast.jsx'
 import { useRequestGuard } from '../../hooks/useRequestGuard.js'
-
-const REGIONS = ['Miền Bắc', 'Miền Trung', 'Miền Nam']
+import { REGIONS } from '../../constants/regions.js'
 
 // ISO → giá trị cho <input type="date">
 const toDateInput = (iso) => (iso ? new Date(iso).toISOString().slice(0, 10) : '')

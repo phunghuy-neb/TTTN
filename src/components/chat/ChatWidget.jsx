@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { sendChatMessage, getChatHistory, clearChatHistory } from '../../services/chatService.js'
+import { getPublicSettings } from '../../services/settingsService.js'
 import { formatPrice } from '../../utils/format.js'
 import { onOpenChat } from './chatEvents.js'
 import Button from '../ui/Button.jsx'
@@ -21,7 +22,16 @@ export default function ChatWidget() {
   const [typing, setTyping] = useState(false)
   const [daNapLichSu, setDaNapLichSu] = useState(false)
   const [choXoa, setChoXoa] = useState(false)
+  // Admin có thể tắt chat toàn site (Batch 7) — đọc cài đặt public khi mount,
+  // tắt là KHÔNG render gì (cả nút nổi lẫn panel)
+  const [chatEnabled, setChatEnabled] = useState(true)
   const cuoiDanhSach = useRef(null)
+
+  useEffect(() => {
+    getPublicSettings().then((res) => {
+      if (res.success && res.chatEnabled === false) setChatEnabled(false)
+    })
+  }, [])
 
   // Slug tour đang xem — BE nhận cả slug lẫn ObjectId làm tourId
   const tourId = pathname.match(/^\/tour\/([^/]+)$/)?.[1] || ''
@@ -91,6 +101,8 @@ export default function ChatWidget() {
     setChoXoa(false)
     if (res.success) setMessages([])
   }
+
+  if (!chatEnabled) return null
 
   return (
     <>

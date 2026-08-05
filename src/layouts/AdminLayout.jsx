@@ -1,25 +1,30 @@
+import { useState, useEffect, useRef } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import { getStats } from '../services/adminService.js'
+import { formatPrice } from '../utils/format.js'
+import { nhanTrangThai } from '../utils/bookingStatus.js'
 
-// Bố cục khu admin — sidebar + topbar (breadcrumb) — tách hẳn khỏi Layout client.
-// Chỉ render bên trong AdminRoute nên user ở đây luôn là admin.
+// Bố cục khu admin (mockup báo cáo): sidebar 5 mục + Đăng xuất ở đáy,
+// topbar = tiêu đề trang + chuông thông báo + avatar. Chỉ render trong AdminRoute.
 
-// Mục điều hướng đang hoạt động — thêm dần khi admin có thêm trang
 const NAV = [
-  { to: '/admin', label: 'Dashboard', icon: '▦', end: true },
-  { to: '/admin/tours', label: 'Quản lý tour', icon: '🗺', end: false },
-  { to: '/admin/bookings', label: 'Quản lý đơn đặt', icon: '🧾', end: false },
-  { to: '/admin/users', label: 'Quản lý người dùng', icon: '👥', end: false },
+  { to: '/admin', label: 'Tổng quan', icon: '▦', end: true },
+  { to: '/admin/tours', label: 'Quản lý Tour', icon: '🗺', end: false },
+  { to: '/admin/bookings', label: 'Quản lý Booking', icon: '🧾', end: false },
+  { to: '/admin/users', label: 'Khách hàng', icon: '👥', end: false },
+  { to: '/admin/ai-settings', label: 'Cài đặt AI', icon: '🤖', end: false },
 ]
 
-// Nhãn breadcrumb theo path — khớp exact trước, rồi tới pattern
-function tenBreadcrumb(pathname) {
-  if (pathname === '/admin') return 'Dashboard'
-  if (pathname === '/admin/tours') return 'Quản lý tour'
+// Tiêu đề trang cho topbar — khớp exact trước, rồi tới pattern
+function tieuDeTrang(pathname) {
+  if (pathname === '/admin') return 'Tổng quan'
+  if (pathname === '/admin/tours') return 'Quản lý Tour'
   if (pathname === '/admin/tours/new') return 'Thêm tour'
   if (/^\/admin\/tours\/[^/]+\/edit$/.test(pathname)) return 'Sửa tour'
-  if (pathname === '/admin/bookings') return 'Quản lý đơn đặt'
-  if (pathname === '/admin/users') return 'Quản lý người dùng'
+  if (pathname === '/admin/bookings') return 'Quản lý Booking'
+  if (pathname === '/admin/users') return 'Khách hàng'
+  if (pathname === '/admin/ai-settings') return 'Cài đặt AI'
   return 'Không tìm thấy'
 }
 
@@ -28,15 +33,40 @@ export default function AdminLayout() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
 
+  // Dropdown chuông + avatar — mở cái này thì đóng cái kia
+  const [moChuong, setMoChuong] = useState(false)
+  const [moAvatar, setMoAvatar] = useState(false)
+  const [donMoi, setDonMoi] = useState(null) // null = chưa nạp
+  const dangNap = useRef(false)
+
   // Đăng xuất rồi về trang chủ khu client
   const onLogout = () => {
     logout()
     navigate('/')
   }
 
+  // Chuông: nạp 5 đơn mới nhất LẦN ĐẦU mở (dùng latestBookings sẵn có của /admin/stats)
+  async function toggleChuong() {
+    setMoAvatar(false)
+    setMoChuong((v) => !v)
+    if (donMoi === null && !dangNap.current) {
+      dangNap.current = true
+      const res = await getStats()
+      dangNap.current = false
+      if (res.success) setDonMoi(res.data.latestBookings || [])
+      else setDonMoi([])
+    }
+  }
+
+  // Đổi trang thì đóng mọi dropdown
+  useEffect(() => {
+    setMoChuong(false)
+    setMoAvatar(false)
+  }, [pathname])
+
   return (
     <div className="flex min-h-screen bg-bg">
-      {/* Sidebar — ẩn ở mobile, khu admin dùng chủ yếu trên desktop */}
+      {/* Sidebar — ẩn ở mobile (có nav ngang thay thế bên dưới topbar) */}
       <aside className="hidden w-[230px] shrink-0 flex-col border-r border-line bg-white md:flex">
         <Link
           to="/admin"
@@ -66,42 +96,108 @@ export default function AdminLayout() {
           ))}
         </nav>
 
-        <div className="mt-auto border-t border-line p-3">
+        {/* Đáy sidebar: về trang khách + Đăng xuất (vị trí theo mockup) */}
+        <div className="mt-auto flex flex-col gap-1 border-t border-line p-3">
           <Link
             to="/"
             className="flex items-center gap-2 rounded-[11px] px-3.5 py-2.5 text-[14px] font-semibold text-muted transition hover:bg-sand hover:text-teal"
           >
             ← Về trang khách
           </Link>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex items-center gap-2 rounded-[11px] px-3.5 py-2.5 text-left text-[14px] font-semibold text-coralD transition hover:bg-coral/5"
+          >
+            ⎋ Đăng xuất
+          </button>
         </div>
       </aside>
 
       {/* Cột phải: topbar + nội dung */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-[62px] items-center justify-between gap-3 border-b border-line bg-bg/85 px-5 backdrop-blur-md">
-          {/* Breadcrumb */}
-          <nav className="flex items-center gap-1.5 text-[13.5px] text-muted" aria-label="Breadcrumb">
-            <Link to="/admin" className="transition hover:text-teal md:pointer-events-none">
-              Admin
-            </Link>
-            <span>/</span>
-            <span className="font-semibold text-ink">{tenBreadcrumb(pathname)}</span>
-          </nav>
+          {/* Tiêu đề trang (mockup) */}
+          <h1 className="truncate font-heading text-[19px] font-semibold text-ink">
+            {tieuDeTrang(pathname)}
+          </h1>
 
-          <div className="flex items-center gap-3">
-            <span className="hidden items-center gap-2 text-[14px] font-semibold text-teal sm:flex">
-              <span className="grid h-8 w-8 place-items-center rounded-full bg-sand text-teal">
-                {user?.name?.charAt(0)}
-              </span>
-              {user?.name}
-            </span>
+          <div className="relative flex items-center gap-2">
+            {/* Chuông thông báo — dropdown 5 đơn mới nhất */}
             <button
               type="button"
-              onClick={onLogout}
-              className="text-[14px] font-semibold text-muted transition hover:text-teal"
+              aria-label="Thông báo đơn mới"
+              onClick={toggleChuong}
+              className={`grid h-9 w-9 place-items-center rounded-full text-[17px] transition hover:bg-sand ${moChuong ? 'bg-sand' : ''}`}
             >
-              Đăng xuất
+              🔔
             </button>
+
+            {/* Avatar chữ cái — menu Hồ sơ / Đăng xuất */}
+            <button
+              type="button"
+              aria-label="Menu tài khoản"
+              onClick={() => {
+                setMoChuong(false)
+                setMoAvatar((v) => !v)
+              }}
+              className="grid h-9 w-9 place-items-center rounded-full bg-teal font-semibold text-white transition hover:opacity-90"
+            >
+              {user?.name?.charAt(0)}
+            </button>
+
+            {/* Dropdown chuông */}
+            {moChuong && (
+              <div className="absolute right-0 top-[46px] w-[320px] overflow-hidden rounded-card border border-line bg-white shadow-soft">
+                <p className="border-b border-line px-4 py-2.5 text-[13px] font-semibold uppercase tracking-wide text-muted">
+                  Đơn mới nhất
+                </p>
+                {donMoi === null && <p className="px-4 py-3 text-[13.5px] text-muted">Đang tải…</p>}
+                {donMoi?.length === 0 && <p className="px-4 py-3 text-[13.5px] text-muted">Chưa có đơn nào.</p>}
+                {donMoi?.map((b) => {
+                  const tt = nhanTrangThai(b.status)
+                  return (
+                    <button
+                      key={b._id}
+                      type="button"
+                      onClick={() => navigate(`/admin/bookings?q=${b.bookingCode}&open=${b._id}`)}
+                      className="flex w-full items-center justify-between gap-2 px-4 py-2.5 text-left transition hover:bg-sand/50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13.5px] font-semibold text-ink">
+                          {b.user?.name || '—'} · {b.bookingCode}
+                        </span>
+                        <span className="block truncate text-[12.5px] text-muted">
+                          {b.tourName} · {formatPrice(b.totalPrice)}
+                        </span>
+                      </span>
+                      <span className={`shrink-0 rounded-pill px-2 py-0.5 text-[11.5px] font-semibold ${tt.className}`}>
+                        {tt.label}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* Dropdown avatar */}
+            {moAvatar && (
+              <div className="absolute right-0 top-[46px] w-[200px] overflow-hidden rounded-card border border-line bg-white shadow-soft">
+                <p className="border-b border-line px-4 py-2.5 text-[13.5px] font-semibold text-ink">
+                  {user?.name}
+                </p>
+                <Link to="/profile" className="block px-4 py-2.5 text-[14px] text-ink transition hover:bg-sand/50">
+                  Hồ sơ
+                </Link>
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="block w-full px-4 py-2.5 text-left text-[14px] text-coralD transition hover:bg-coral/5"
+                >
+                  Đăng xuất
+                </button>
+              </div>
+            )}
           </div>
         </header>
 

@@ -98,7 +98,10 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 
 | Method | Path | Body/Query | Response 2xx |
 |---|---|---|---|
-| GET | `/admin/stats` | — | `200 { success, stats }` — aggregate thật: `totalTours, totalBookings, totalUsers, revenue` (Σ đơn `paid`+`completed`) + **Batch 4**: `monthlyRevenue[{year,month,revenue,count}]` (6 tháng theo ngày đặt), `byStatus{status:n}`, `topTours[{tourId,tourName,soDon,doanhThu}]` (top 5, bỏ đơn hủy), `latestBookings[]` (5 đơn mới, populate user) |
+| GET | `/admin/stats` | — | `200 { success, stats }` — aggregate thật: `totalTours, totalBookings, totalUsers, revenue` (Σ đơn `paid`+`completed`) + **Batch 4**: `monthlyRevenue[{year,month,revenue,count}]` (6 tháng theo ngày đặt), `byStatus{status:n}`, `topTours[{tourId,tourName,soDon,doanhThu}]` (top 5, bỏ đơn hủy), `latestBookings[]` (5 đơn mới, populate user) + **Batch 7**: `currentMonthRevenue` (doanh thu THÁNG hiện tại — khác mảng monthlyRevenue), `pendingBookings`, `activeTours` (isActive≠false), `revenueByRegion[{region,revenue,bookings}]` (đủ 3 miền kể cả revenue 0) |
+| GET | `/admin/ai-settings` | — | `200 { success, aiServiceUrl (đã che), status: 'not_configured'\|'online'\|'offline' (ping thật timeout 3s), chatEnabled, totalMessages, uniqueUsers }` |
+| PATCH | `/admin/ai-settings` | `{ chatEnabled: boolean }` | `200 { success, message, chatEnabled }` — upsert collection `settings` (key-value) |
+| GET | `/settings/public` | — (**không cần đăng nhập**) | `200 { success, chatEnabled }` — FE đọc lúc mount để quyết định render ChatWidget |
 | GET | `/admin/users` | `?search&role&isActive&sort&page&limit` | `200 { success, total, page, totalPages, users[] }` — mỗi user kèm `soDon` (tổng đơn) |
 | GET | `/admin/users/:id` | — | `200 { success, user }` |
 | PUT | `/admin/users/:id` | `{ name?, phone?, avatar?, role? }` | `200 { success, message, user }` — tự hạ quyền → 409 `CANNOT_DEMOTE_SELF` |

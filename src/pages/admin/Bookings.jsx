@@ -47,7 +47,18 @@ export default function Bookings() {
   const dateFrom = searchParams.get('dateFrom') || ''
   const dateTo = searchParams.get('dateTo') || ''
   const q = searchParams.get('q') || ''
+  const openId = searchParams.get('open') || '' // chuông topbar nhảy thẳng vào 1 đơn
   const [tuKhoa, setTuKhoa] = useState(q)
+
+  // ?open=<id> → tự mở modal chi tiết đúng đơn (rồi gỡ param để không mở lại khi đổi lọc)
+  useEffect(() => {
+    if (!openId) return
+    moChiTiet(openId)
+    const params = new URLSearchParams(searchParams)
+    params.delete('open')
+    setSearchParams(params, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openId])
 
   const beginRequest = useRequestGuard()
 

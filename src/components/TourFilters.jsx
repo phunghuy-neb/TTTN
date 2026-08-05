@@ -1,5 +1,6 @@
 // Thanh lọc/sắp xếp — KHÔNG tự giữ state, KHÔNG đọc URL.
 // Chỉ nhận bộ lọc hiện tại qua prop `value` và báo thay đổi qua `onChange`.
+import { REGIONS } from '../constants/regions.js'
 
 // Ánh xạ khoảng giá ↔ cặp minPrice/maxPrice (đơn vị VNĐ, '' hoặc '0' = không giới hạn)
 const PRICE_OPTIONS = [
@@ -65,9 +66,9 @@ export default function TourFilters({ value, onChange }) {
             className="field-input w-full"
           >
             <option value="">Tất cả</option>
-            <option value="Miền Bắc">Miền Bắc</option>
-            <option value="Miền Trung">Miền Trung</option>
-            <option value="Miền Nam">Miền Nam</option>
+            {REGIONS.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
           </select>
         </div>
 
