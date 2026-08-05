@@ -35,14 +35,6 @@ export async function getMyBookings({ status = '', page = 1, limit = 5 } = {}) {
   }
 }
 
-// Chi tiết một đơn — Backend chỉ cho chủ đơn hoặc admin xem
-export async function getBookingById(id) {
-  const res = await request(`/bookings/${id}`, { auth: true })
-  if (res.success === false) return res
-
-  return { success: true, data: res.booking }
-}
-
 // Hủy đơn — Backend chỉ cho hủy khi đơn còn ở trạng thái pending_payment
 export async function cancelBooking(id) {
   const res = await request(`/bookings/${id}/cancel`, { method: 'PATCH', auth: true })

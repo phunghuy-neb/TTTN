@@ -5,9 +5,6 @@
 // Cấu trúc trả về giữ nguyên: { success, data, pagination } / { success, data } / { success: false, message }.
 import { request } from './api.js'
 
-// Giả lập độ trễ mạng — giữ lại cho các nhánh còn mock ở tuần sau
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-
 // Map giá trị sắp xếp của FE → cú pháp sort của Mongoose mà Backend nhận.
 // Giá trị rỗng/không khớp → không gửi `sort`, để Backend dùng mặc định `-createdAt`.
 const SORT_MAP = {
