@@ -201,7 +201,9 @@ export default function Dashboard() {
                     <XAxis dataKey="thang" tick={TRUC} axisLine={{ stroke: LUOI }} tickLine={false} />
                     <YAxis tick={TRUC} tickFormatter={tienGonTruc} axisLine={false} tickLine={false} width={44} />
                     <Tooltip cursor={{ fill: '#F1ECE0', opacity: 0.5 }} content={<ChartTooltip money />} />
-                    <Bar dataKey="doanhThu" name="Doanh thu" fill={MAU_DOANH_THU} barSize={28} radius={[4, 4, 0, 0]} />
+                    {/* isAnimationActive=false: xem chú thích ở biểu đồ tròn — tab nền
+                        làm rAF đóng băng khiến cột dừng giữa chừng và hiện SAI tỉ lệ */}
+                    <Bar dataKey="doanhThu" name="Doanh thu" fill={MAU_DOANH_THU} barSize={28} radius={[4, 4, 0, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -221,6 +223,11 @@ export default function Dashboard() {
                       paddingAngle={2}
                       stroke="#FFFFFF"
                       strokeWidth={2}
+                      // Recharts vẽ cung tròn bằng animation qua requestAnimationFrame.
+                      // Chrome đóng băng rAF khi tab ở nền → sector không bao giờ được
+                      // tạo hình và biểu đồ trống vĩnh viễn (mở dashboard ở tab nền rồi
+                      // chuyển sang là gặp). Vẽ thẳng giá trị cuối, không cần animation.
+                      isAnimationActive={false}
                     >
                       {duLieuMien.map((d) => (
                         <Cell key={d.region} fill={MAU_MIEN[d.region]} />
@@ -249,7 +256,7 @@ export default function Dashboard() {
                     <XAxis type="number" tick={TRUC} allowDecimals={false} axisLine={{ stroke: LUOI }} tickLine={false} />
                     <YAxis type="category" dataKey="label" tick={TRUC} width={110} axisLine={false} tickLine={false} />
                     <Tooltip cursor={{ fill: '#F1ECE0', opacity: 0.5 }} content={<ChartTooltip />} />
-                    <Bar dataKey="soDon" name="Số đơn" barSize={20} radius={[0, 4, 4, 0]}>
+                    <Bar dataKey="soDon" name="Số đơn" barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
                       {duLieuTrangThai.map((d) => (
                         <Cell key={d.status} fill={d.mau} />
                       ))}

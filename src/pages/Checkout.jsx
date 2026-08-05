@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { createBooking } from '../services/bookingService.js'
@@ -35,6 +35,10 @@ export default function Checkout() {
   const [phuongThuc, setPhuongThuc] = useState('later')
   const [errors, setErrors] = useState({}) // { name, phone, email, form }
   const [submitting, setSubmitting] = useState(false)
+  // Chốt ĐỒNG BỘ chống double-submit: `submitting` chỉ vô hiệu hoá nút sau khi React
+  // re-render, nên nhiều click rơi vào CÙNG một tick vẫn lọt qua và tạo đơn trùng.
+  // useRef đổi giá trị tức thì nên chặn được ngay từ click thứ hai.
+  const dangGui = useRef(false)
 
   // Vào thẳng /checkout không qua trang chi tiết → không có dữ liệu đơn, không gọi API
   if (!state?.tourId || !state?.departureId || !state?.guests) {
@@ -74,10 +78,12 @@ export default function Checkout() {
 
   const onSubmit = async (e) => {
     e.preventDefault()
+    if (dangGui.current) return // click thứ 2 trở đi trong cùng tick — bỏ qua
     const next = validate()
     setErrors(next)
     if (Object.keys(next).length > 0) return
 
+    dangGui.current = true
     setSubmitting(true)
     const res = await createBooking({
       tourId: state.tourId,
@@ -94,6 +100,8 @@ export default function Checkout() {
     setSubmitting(false)
 
     if (!res.success) {
+      // Thất bại thì mở chốt để người dùng sửa thông tin và gửi lại
+      dangGui.current = false
       // Hiển thị đúng message Backend trả về (hết chỗ, tour ngưng bán, ...)
       setErrors({ form: res.message || 'Đặt tour không thành công. Vui lòng thử lại.' })
       return

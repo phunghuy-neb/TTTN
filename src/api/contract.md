@@ -87,7 +87,7 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 
 | Method | Path | Body/Query | Response 2xx | Lỗi |
 |---|---|---|---|---|
-| POST | `/bookings` | `{ tourId, departureId, guests, contact{name,phone,email}, paymentMethod, note }` | `201 { success, message, booking }` | 400 `VALIDATION_ERROR`/`DEPARTURE_NOT_FOUND`/`DEPARTURE_PAST`, 404 tour, **409 `SLOT_UNAVAILABLE`** |
+| POST | `/bookings` | `{ tourId, departureId, guests, contact{name,phone,email}, paymentMethod, note }` | `201 { success, message, booking }`; **gửi lặp → `200 { …, duplicate: true }`** kèm ĐƠN CŨ (xem chống đơn trùng bên dưới) | 400 `VALIDATION_ERROR`/`DEPARTURE_NOT_FOUND`/`DEPARTURE_PAST`, 404 tour, **409 `SLOT_UNAVAILABLE`** |
 | GET | `/bookings/my` | `?status&page&limit` | `200 { success, total, page, totalPages, bookings[] }` | 400 status lạ |
 | GET | `/bookings/:id` | — | `200 { success, booking }` | 403 (không phải chủ đơn/admin), 404 |
 | PATCH | `/bookings/:id/cancel` | — | `200 { success, message, booking }` — hoàn chỗ về đợt | 400 (không phải pending_payment), 403, 404 |
@@ -111,6 +111,8 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 | GET | `/admin/bookings/:id` | — | `200 { success, booking }` — populate user + tour, kèm `statusHistory` |
 | GET | `/admin/bookings/stats` | — | `200 { success, stats }` (endpoint cũ, chỉ tính đơn `paid` — dashboard dùng `/admin/stats`) |
 | PATCH | `/admin/bookings/:id/status` | `{ status, txnRef?, paymentMethod? }` | `200 { success, message, booking }` | 
+
+**Chống đơn trùng khi đặt tour (Batch 8).** Cùng `user + tour + departureId` gửi lại trong **10 giây** được coi là MỘT lần đặt bị gửi lặp (double-click, mạng chậm rồi bấm lại, F5 gửi lại form): API trả **200** kèm `duplicate: true` và **chính đơn đã tạo**, không tạo đơn mới và không trừ chỗ lần hai. Cố ý không trả lỗi — người dùng bấm hai lần không phải lỗi của họ, báo lỗi sẽ khiến họ tưởng đặt hỏng rồi đặt lại. Hai lớp bảo vệ: kiểm trước khi ghi (bắt các lần gửi tuần tự) và **unique index `idemKey`** trên Booking (chốt thật cho request bay song song — kiểm-rồi-ghi không chặn được vì mọi request cùng đọc "chưa có đơn" trước khi ai kịp ghi). FE còn khoá thêm bằng `useRef` để nhiều click trong cùng một tick không gửi đi. Giới hạn đã biết: hai request song song rơi đúng hai bên mốc chia ô 10 giây vẫn có thể tạo 2 đơn — xác suất rất thấp, chấp nhận được.
 
 **Máy trạng thái đơn (Batch 4)** — `PATCH /admin/bookings/:id/status` chỉ chấp nhận: `pending_payment → paid | cancelled`; `paid → completed | cancelled`; `completed`/`cancelled` là trạng thái cuối. Sai luồng → **409 `INVALID_STATUS_TRANSITION`** kèm `currentStatus`, DB không đổi. Flip trạng thái có điều kiện (2 admin bấm đồng thời → người sau 409, không hoàn chỗ 2 lần). Chuyển sang `cancelled` hoàn chỗ **nguyên tử theo `departureId`**; đơn mồ côi (departureId null) bỏ qua hoàn chỗ + ghi log. Mỗi lần đổi ghi thêm `statusHistory: [{from, to, byUserId, at}]` (user tự hủy cũng ghi).
 
