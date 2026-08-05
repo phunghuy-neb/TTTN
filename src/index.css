@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   Design tokens — khớp app.html (nguồn tham chiếu giao diện DUY NHẤT)
+   ========================================================================== */
+:root {
+  --color-teal: #0d4a45; /* màu chính */
+  --color-teal-2: #12645c;
+  --color-jade: #1e8a6e;
+  --color-coral: #ef6a47; /* màu nhấn */
+  --color-coral-d: #d9542f;
+  --color-ink: #152623; /* màu chữ body */
+  --color-muted: #5e6f6a;
+  --color-bg: #fbfaf6; /* màu nền */
+  --color-sand: #f1ece0;
+  --color-line: #e6e0d4; /* viền / đường kẻ */
+  --radius-pill: 999px; /* bo tròn nút */
+  --radius-card: 16px; /* bo góc thành phần */
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-bg font-body text-ink antialiased;
+    line-height: 1.55;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-heading font-semibold;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+}
+
+@layer components {
+  /* Bố cục canh giữa — khớp .wrap của app.html */
+  .wrap {
+    @apply mx-auto w-full max-w-[1180px] px-6;
+  }
+
+  /* Nút chính (pill, nền coral) */
+  .btn-coral {
+    @apply inline-flex items-center justify-center gap-2 rounded-pill bg-coral px-[22px] py-3
+      font-semibold text-white shadow-coral transition hover:bg-coralD active:scale-[0.98]
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Nút teal */
+  .btn-teal {
+    @apply inline-flex items-center justify-center gap-2 rounded-pill bg-teal px-[22px] py-3
+      font-semibold text-white transition hover:bg-teal2 active:scale-[0.98]
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Nút phụ (pill, viền) */
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-pill border-[1.5px] border-line
+      bg-transparent px-[22px] py-3 font-semibold text-teal transition hover:border-teal
+      hover:bg-white active:scale-[0.98];
+  }
+
+  /* Nhãn chữ nhỏ in hoa (eyebrow) */
+  .eyebrow {
+    @apply text-[12.5px] font-bold uppercase tracking-[0.14em] text-jade;
+  }
+
+  /* Ô nhập liệu — khớp .frm input của app.html */
+  .field-input {
+    @apply w-full rounded-[11px] border-[1.5px] border-line bg-white px-[14px] py-3 text-[15px]
+      text-ink outline-none transition placeholder:text-muted/60 focus:border-jade;
+  }
+
+  .field-input--error {
+    @apply border-coral focus:border-coral;
+  }
+
+  .field-label {
+    @apply mb-1.5 mt-3.5 block text-[13px] font-semibold text-muted;
+  }
+
+  .field-error {
+    @apply mt-[5px] text-[12.5px] text-coralD;
+  }
+
+  /* Thẻ card bo góc mềm */
+  .card-surface {
+    @apply rounded-card border border-line bg-white shadow-soft;
+  }
+}
