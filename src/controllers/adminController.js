@@ -9,6 +9,10 @@ import Booking from '../models/Booking.js'
 // Trạng thái đơn tính doanh thu — tiền đã thực thu
 const TRANG_THAI_DOANH_THU = ['paid', 'completed']
 
+// Khớp enum region trong Tour model — miền không có doanh thu vẫn phải trả
+// revenue 0 để pie chart FE luôn đủ 3 phần
+const CAC_MIEN = ['Miền Bắc', 'Miền Trung', 'Miền Nam']
+
 // ============================================================
 //  @route   GET /api/admin/stats
 //  @desc    Thống kê dashboard — toàn bộ aggregate chạy ở DB, FE chỉ hiển thị:
@@ -24,8 +28,25 @@ export const getAdminStats = async (req, res) => {
     tuThang.setDate(1)
     tuThang.setHours(0, 0, 0, 0)
 
-    const [totalTours, totalBookings, totalUsers, doanhThu, theoThang, theoTrangThai, topTours, donMoi] =
-      await Promise.all([
+    // Mốc đầu tháng hiện tại — cho currentMonthRevenue
+    const dauThangNay = new Date()
+    dauThangNay.setDate(1)
+    dauThangNay.setHours(0, 0, 0, 0)
+
+    const [
+      totalTours,
+      totalBookings,
+      totalUsers,
+      doanhThu,
+      theoThang,
+      theoTrangThai,
+      topTours,
+      donMoi,
+      doanhThuThangNay,
+      pendingBookings,
+      activeTours,
+      theoMien,
+    ] = await Promise.all([
         Tour.countDocuments(),
         Booking.countDocuments(),
         User.countDocuments(),
@@ -78,10 +99,44 @@ export const getAdminStats = async (req, res) => {
           .limit(5)
           .populate('user', 'name email')
           .lean(),
+
+        // Doanh thu THÁNG HIỆN TẠI (khác mảng monthlyRevenue 6 tháng ở trên)
+        Booking.aggregate([
+          { $match: { status: { $in: TRANG_THAI_DOANH_THU }, createdAt: { $gte: dauThangNay } } },
+          { $group: { _id: null, revenue: { $sum: '$totalPrice' } } },
+        ]),
+
+        // Đơn đang chờ thanh toán
+        Booking.countDocuments({ status: 'pending_payment' }),
+
+        // Tour đang hoạt động (chưa bị soft delete)
+        Tour.countDocuments({ isActive: { $ne: false } }),
+
+        // Doanh thu + số đơn theo MIỀN: đơn paid/completed → lookup Tour → group region
+        Booking.aggregate([
+          { $match: { status: { $in: TRANG_THAI_DOANH_THU } } },
+          { $lookup: { from: 'tours', localField: 'tour', foreignField: '_id', as: 'tourDoc' } },
+          { $unwind: '$tourDoc' },
+          {
+            $group: {
+              _id: '$tourDoc.region',
+              revenue: { $sum: '$totalPrice' },
+              bookings: { $sum: 1 },
+            },
+          },
+        ]),
       ])
 
     const byStatus = {}
     for (const s of theoTrangThai) byStatus[s._id] = s.count
+
+    // Đủ 3 miền kể cả miền doanh thu 0 — pie FE luôn đủ 3 phần
+    const banDoMien = new Map(theoMien.map((m) => [m._id, m]))
+    const revenueByRegion = CAC_MIEN.map((region) => ({
+      region,
+      revenue: banDoMien.get(region)?.revenue || 0,
+      bookings: banDoMien.get(region)?.bookings || 0,
+    }))
 
     res.json({
       success: true,
@@ -90,6 +145,10 @@ export const getAdminStats = async (req, res) => {
         totalBookings,
         totalUsers,
         revenue: doanhThu[0]?.revenue || 0,
+        currentMonthRevenue: doanhThuThangNay[0]?.revenue || 0,
+        pendingBookings,
+        activeTours,
+        revenueByRegion,
         monthlyRevenue: theoThang.map((t) => ({
           year: t._id.year,
           month: t._id.month,
