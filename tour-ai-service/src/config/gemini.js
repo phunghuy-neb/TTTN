@@ -1,25 +1,47 @@
-const { GoogleGenAI } = require('@google/genai');
-
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error('Thiếu GEMINI_API_KEY trong file .env');
-}
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-const EMBEDDING_MODEL = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001';
-const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash';
+const { GoogleGenAI } = require("@google/genai");
 
 /**
- * Sinh câu trả lời từ Gemini (dùng cho phần chat/RAG ở Tuần 3).
- * @param {string} prompt
+ * Module dùng chung để gọi Gemini API.
+ *
+ * Ghi chú (rút ra từ quá trình triển khai Tuần 2):
+ * SDK cũ @google/generative-ai và các model gemini-1.5-flash / gemini-2.5-flash
+ * đã ngừng phục vụ người dùng mới nên dự án dùng SDK mới @google/genai.
+ * Tên model KHÔNG hard-code mà lấy từ .env (GEMINI_CHAT_MODEL, GEMINI_EMBEDDING_MODEL)
+ * để chỉ cần sửa .env khi nhà cung cấp đổi/khai tử model, không phải sửa code.
+ */
+
+let client = null;
+
+function getClient() {
+  if (!client) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("Thiếu biến môi trường GEMINI_API_KEY trong file .env");
+    }
+    client = new GoogleGenAI({ apiKey });
+  }
+  return client;
+}
+
+/**
+ * Sinh câu trả lời hội thoại tự nhiên.
+ * @param {string} prompt - Nội dung người dùng hỏi
+ * @param {string} [systemInstruction] - Chỉ dẫn hệ thống (VD: yêu cầu trả lời dựa trên context)
  * @returns {Promise<string>}
  */
-async function generateChatReply(prompt) {
+async function generateChatReply(prompt, systemInstruction) {
+  const ai = getClient();
+  const model = process.env.GEMINI_CHAT_MODEL || "gemini-3.5-flash";
+
   const response = await ai.models.generateContent({
-    model: CHAT_MODEL,
+    model,
     contents: prompt,
+    ...(systemInstruction
+      ? { config: { systemInstruction } }
+      : {}),
   });
-  return response.text;
+
+  return response.text?.trim() || "";
 }
 
 /**
@@ -28,25 +50,27 @@ async function generateChatReply(prompt) {
  * @returns {Promise<number[]>}
  */
 async function embedText(text) {
-  const response = await ai.models.embedContent({
-    model: EMBEDDING_MODEL,
-    contents: text,
-  });
-  return response.embeddings[0].values;
+  const [vector] = await embedBatch([text]);
+  return vector;
 }
 
 /**
- * Sinh vector embedding cho NHIỀU đoạn văn bản cùng lúc (batch).
- * Lưu ý: nên giới hạn ~100 đoạn/lần gọi để tránh vượt quá giới hạn request của API.
+ * Sinh vector embedding cho NHIỀU đoạn văn bản trong một lần gọi (batch),
+ * dùng khi đồng bộ toàn bộ chunk của một tour trong syncTourVectors.js.
  * @param {string[]} texts
  * @returns {Promise<number[][]>}
  */
 async function embedBatch(texts) {
+  const ai = getClient();
+  const model = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
+
   const response = await ai.models.embedContent({
-    model: EMBEDDING_MODEL,
+    model,
     contents: texts,
   });
+
+  // SDK trả về mảng embeddings tương ứng thứ tự input
   return response.embeddings.map((e) => e.values);
 }
 
-module.exports = { ai, generateChatReply, embedText, embedBatch, EMBEDDING_MODEL, CHAT_MODEL };
+module.exports = { generateChatReply, embedText, embedBatch, getClient };

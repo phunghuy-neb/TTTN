@@ -1,32 +1,36 @@
-/**
- * Script kiểm tra truy vấn ngữ nghĩa sau khi đã chạy syncTourVectors.js.
- * Dùng để xác nhận: nhập một câu hỏi tự nhiên -> nhận về tour liên quan nhất.
- * Chạy: npm run query:test
- */
-require('dotenv').config();
-const { embedText } = require('../config/gemini');
-const { getTourCollection } = require('../config/chroma');
-
-const SAMPLE_QUERY = process.argv[2] || 'Tôi muốn đi biển 3 ngày, ngân sách khoảng 5 triệu';
+require("dotenv").config();
+const { connectMongo } = require("../config/db");
+const { getRagContext } = require("../services/ragService");
 
 async function main() {
-  const collection = await getTourCollection();
-  const queryEmbedding = await embedText(SAMPLE_QUERY);
+  const prompt = process.argv.slice(2).join(" ").trim();
+  if (!prompt) {
+    console.error('Cách dùng: npm run query:test -- "Tôi muốn đi biển 3 ngày, ngân sách 5 triệu"');
+    process.exit(1);
+  }
 
-  const results = await collection.query({
-    queryEmbeddings: [queryEmbedding],
-    nResults: 3,
-  });
+  await connectMongo();
 
-  console.log(`Câu hỏi: "${SAMPLE_QUERY}"\n`);
-  console.log('Kết quả liên quan nhất:');
-  results.documents[0].forEach((doc, i) => {
-    console.log(`\n#${i + 1} (tourId: ${results.metadatas[0][i].tourId})`);
-    console.log(doc);
-  });
+  console.log(`\nCâu hỏi: "${prompt}"`);
+  const { intent, tours } = await getRagContext(prompt);
+
+  console.log("Ý định trích xuất:", intent);
+  console.log("Kết quả liên quan nhất:");
+
+  if (!tours.length) {
+    console.log("  (không tìm thấy tour phù hợp)");
+  } else {
+    tours.forEach((t, i) => {
+      console.log(
+        `  #${i + 1} (tourId: ${t._id}) — ${t.name}, giá ${t.basePrice.toLocaleString("vi-VN")}đ, ${t.days} ngày`
+      );
+    });
+  }
+
+  process.exit(0);
 }
 
 main().catch((err) => {
-  console.error('✘ Lỗi truy vấn:', err.message);
+  console.error("Thất bại:", err);
   process.exit(1);
 });

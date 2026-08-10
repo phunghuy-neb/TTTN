@@ -1,92 +1,88 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 const { Schema } = mongoose;
 
 /**
- * ITINERARY SUB-SCHEMA
- * Chi tiết lịch trình từng ngày trong tour
+ * Schema Tour — collection trung tâm, lưu toàn bộ thông tin nghiệp vụ của một tour.
+ * Thiết kế từ Tuần 1: description là nguồn chính để sinh embedding cho AI;
+ * vectorSync là cầu nối theo dõi trạng thái đồng bộ sang ChromaDB (Tuần 2-3).
  */
-const ItineraryDaySchema = new Schema({
-  dayNumber: { type: Number, required: true },      // Ngày thứ mấy
-  title: { type: String, required: true },           // VD: "Khám phá Vịnh Hạ Long"
-  description: { type: String, required: true },     // Mô tả chi tiết hoạt động trong ngày
-  meals: [{ type: String, enum: ['breakfast', 'lunch', 'dinner'] }],
-  accommodation: { type: String },                   // Khách sạn/resort lưu trú
-}, { _id: false });
 
-/**
- * REVIEW SUB-SCHEMA
- */
-const ReviewSchema = new Schema({
-  user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
-  rating: { type: Number, min: 1, max: 5, required: true },
-  comment: { type: String },
-  createdAt: { type: Date, default: Date.now },
-}, { _id: false });
+const ItineraryDaySchema = new Schema(
+  {
+    dayNumber: { type: Number, required: true },
+    title: { type: String, required: true },
+    description: { type: String, default: "" },
+    meals: [{ type: String }],
+    accommodation: { type: String, default: "" },
+  },
+  { _id: false }
+);
 
-/**
- * DEPARTURE (LỊCH KHỞI HÀNH) SUB-SCHEMA
- */
-const DepartureSchema = new Schema({
-  date: { type: Date, required: true },
-  availableSlots: { type: Number, required: true },
-  price: { type: Number, required: true },           // Giá có thể khác nhau theo từng đợt khởi hành
-}, { _id: false });
+const DepartureSchema = new Schema(
+  {
+    date: { type: Date, required: true },
+    availableSlots: { type: Number, required: true, min: 0 },
+    price: { type: Number, required: true },
+  },
+  { _id: false }
+);
 
-/**
- * TOUR SCHEMA (collection chính)
- */
-const TourSchema = new Schema({
-  name: { type: String, required: true, trim: true },
-  slug: { type: String, required: true, unique: true, index: true },
+const ReviewSchema = new Schema(
+  {
+    user: { type: Schema.Types.ObjectId, ref: "User" },
+    rating: { type: Number, min: 1, max: 5 },
+    comment: { type: String },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
 
-  destination: {
-    region: { type: String, required: true },        // VD: "Miền Bắc", "Miền Trung"
-    location: { type: String, required: true },       // VD: "Hạ Long, Quảng Ninh"
+// Trường vectorSync — cầu nối sang ChromaDB (thiết kế Tuần 1, dùng ở script Tuần 2)
+const VectorSyncSchema = new Schema(
+  {
+    isSynced: { type: Boolean, default: false },
+    lastSyncedAt: { type: Date, default: null },
+    chromaId: { type: String, default: null },
+  },
+  { _id: false }
+);
+
+const TourSchema = new Schema(
+  {
+    name: { type: String, required: true },
+    slug: { type: String, required: true },
+    region: { type: String, required: true }, // VD: "Miền Bắc"
+    location: { type: String, required: true }, // VD: "Hạ Long"
     coordinates: {
       lat: { type: Number },
       lng: { type: Number },
     },
-  },
-
-  summary: { type: String, required: true },          // Mô tả ngắn — dùng để hiển thị danh sách
-  description: { type: String, required: true },      // Mô tả đầy đủ — nguồn chính để tạo embedding
-
-  duration: {
+    summary: { type: String, default: "" },
+    description: { type: String, default: "" }, // nguồn chính để sinh embedding
     days: { type: Number, required: true },
-    nights: { type: Number, required: true },
+    basePrice: { type: Number, required: true },
+    oldPrice: { type: Number, default: null },
+    departures: [DepartureSchema],
+    itinerary: [ItineraryDaySchema],
+    tags: [{ type: String }],
+    images: [{ type: String }],
+    cancellationPolicy: { type: String, default: "" },
+    reviews: [ReviewSchema],
+    avgRating: { type: Number, default: 0 },
+    status: {
+      type: String,
+      enum: ["draft", "published", "archived"],
+      default: "draft",
+    },
+    vectorSync: { type: VectorSyncSchema, default: () => ({}) },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
+  { timestamps: true }
+);
 
-  basePrice: { type: Number, required: true },         // Giá cơ bản (VNĐ)
-  departures: [DepartureSchema],                        // Các đợt khởi hành cụ thể
+// Chỉ mục (Index) — thiết kế Tuần 1
+TourSchema.index({ region: 1, basePrice: 1 }); // lọc theo khu vực + khoảng giá
+TourSchema.index({ status: 1 }); // chỉ lấy tour đã published
+TourSchema.index({ slug: 1 }, { unique: true }); // theo URL, chống trùng
 
-  itinerary: [ItineraryDaySchema],
-
-  category: [{ type: String }],                         // VD: ["biển", "nghỉ dưỡng", "gia đình"]
-  tags: [{ type: String }],                              // Từ khóa hỗ trợ tìm kiếm / gợi ý AI
-
-  images: [{ type: String }],                            // URL ảnh
-  cancellationPolicy: { type: String },
-
-  reviews: [ReviewSchema],
-  avgRating: { type: Number, default: 0 },
-
-  status: {
-    type: String,
-    enum: ['draft', 'published', 'archived'],
-    default: 'draft',
-  },
-
-  // Đánh dấu để script đồng bộ Vector DB biết tour này đã/chưa được embedding
-  vectorSync: {
-    isSynced: { type: Boolean, default: false },
-    lastSyncedAt: { type: Date },
-    chromaId: { type: String },                         // Liên kết ngược sang ChromaDB document id
-  },
-
-  createdBy: { type: Schema.Types.ObjectId, ref: 'User' },
-}, { timestamps: true });
-
-TourSchema.index({ 'destination.region': 1, basePrice: 1 });
-TourSchema.index({ status: 1 });
-
-module.exports = mongoose.model('Tour', TourSchema);
+module.exports = mongoose.models.Tour || mongoose.model("Tour", TourSchema);

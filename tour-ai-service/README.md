@@ -1,70 +1,164 @@
-# tour-ai-service — Tuần 2
+# tour-ai-service
 
-Môi trường Node.js cho phần AI (RAG) của hệ thống đặt tour du lịch.
-Nhiệm vụ tuần 2: **thiết lập môi trường + tích hợp Gemini API + script chuyển tour thành vector.**
+AI Service (RAG pipeline) cho **Hệ thống Quản lý và Đặt tour du lịch tích hợp AI trợ lý**.
+Đây là toàn bộ phần việc của **Mai Tuấn Anh** trong đồ án, tổng hợp đủ 6 tuần thành
+một kết quả bàn giao hoàn chỉnh, có thể chạy thật.
 
-## 1. Cài đặt
+## Kiến trúc tổng quan
 
-```bash
-npm install
-cp .env.example .env
+```
+User (Client) ──chat──► tour-ai-service ──► Gemini API (chat + embedding)
+                              │
+                              ├─► ChromaDB   (semantic search: "tour nào liên quan")
+                              └─► MongoDB    (dữ liệu chính xác: giá, lịch trình, chính sách)
 ```
 
-Điền vào `.env`:
-- `MONGO_URI` — chuỗi kết nối MongoDB (đã có sẵn dữ liệu Tour từ collection thiết kế tuần 1).
-- `GEMINI_API_KEY` — lấy tại https://aistudio.google.com/app/apikey
-- `CHROMA_URL` — địa chỉ Chroma server. Chạy local bằng Docker:
+Nguyên tắc cốt lõi xuyên suốt: **ChromaDB chỉ dùng để xác định tour nào liên quan,
+còn dữ liệu dùng để trả lời luôn lấy trực tiếp từ MongoDB** — tránh AI trả lời sai
+giá hoặc thông tin đã lỗi thời.
 
-> **Lưu ý:** Project dùng SDK chính thức hiện hành `@google/genai` (SDK cũ `@google/generative-ai` đã ngừng phát triển) với model chat `gemini-3.5-flash` và model embedding `gemini-embedding-001`. Nếu sau này thấy lỗi 404 "model no longer available", nghĩa là Google đã đổi tên model — chỉ cần sửa `GEMINI_CHAT_MODEL` / `GEMINI_EMBEDDING_MODEL` trong `.env`, không cần sửa code.
-  ```bash
-  docker run -p 8000:8000 chromadb/chroma
-  ```
+## Cấu trúc thư mục
 
-## 2. Kiểm tra môi trường
+```
+tour-ai-service/
+├── package.json
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── client-widget/
+│   └── ChatbotWidget.jsx      (Tuần 5 - widget chat nhúng vào Client)
+└── src/
+    ├── config/
+    │   ├── db.js               (kết nối MongoDB)
+    │   ├── gemini.js           (chat + embedding, SDK @google/genai)
+    │   └── chroma.js           (kết nối ChromaDB)
+    ├── models/
+    │   └── Tour.js             (schema Tour - Tuần 1)
+    ├── utils/
+    │   └── tourChunking.js     (chiến lược chunking - Tuần 1)
+    ├── services/
+    │   ├── intentService.js    (trích xuất ý định - Tuần 3)
+    │   ├── ragService.js       (luồng RAG 6 bước - Tuần 3)
+    │   ├── chatService.js      (sinh câu trả lời + streaming - Tuần 4)
+    │   └── syncService.js      (đồng bộ vector - Tuần 2, dùng chung script/API)
+    ├── routes/
+    │   └── aiRoutes.js         (/api/ai/*)
+    ├── scripts/
+    │   ├── testGemini.js       (Tuần 2)
+    │   ├── syncTourVectors.js  (Tuần 2)
+    │   ├── testQuery.js        (Tuần 2)
+    │   └── testAIAccuracy.js   (Tuần 6)
+    └── server.js
+```
+
+## Tổng hợp theo từng tuần
+
+| Tuần | Nội dung | File liên quan |
+|---|---|---|
+| 1 | Phân tích luồng hoạt động AI (RAG pipeline), thiết kế schema MongoDB (Tour, User, Booking) và thiết kế vector embedding ChromaDB (chunking, cấu trúc document, metadata). | `models/Tour.js`, `utils/tourChunking.js` |
+| 2 | Thiết lập môi trường Node.js cho AI (`tour-ai-service`), tích hợp Gemini API (`@google/genai`), viết script chuyển đổi dữ liệu tour thành vector. | `config/gemini.js`, `config/chroma.js`, `services/syncService.js`, `scripts/syncTourVectors.js`, `scripts/testGemini.js` |
+| 3 | Hoàn thiện luồng RAG (trích xuất ý định, semantic search, ghép context), API `/api/ai/context`. | `services/intentService.js`, `services/ragService.js`, `routes/aiRoutes.js`, `scripts/testQuery.js` |
+| 4 | Đưa AI vào luồng chat thực tế (`/api/ai/chat`), xử lý streaming text (`/api/ai/chat/stream` qua SSE). | `services/chatService.js`, `routes/aiRoutes.js` |
+| 5 | Giao diện Chatbot trên Client, tích hợp TTS (Text-to-Speech, dùng Web Speech API trình duyệt) để AI đọc phản hồi. | `client-widget/ChatbotWidget.jsx` |
+| 6 | Kiểm thử độ chính xác AI (phát hiện lọc cứng sai + ảo giác số liệu), deploy hệ thống AI (Docker). | `scripts/testAIAccuracy.js`, `Dockerfile`, `docker-compose.yml` |
+
+## Chạy thử
+
+### 1. Cài đặt
+
+```bash
+cd tour-ai-service
+npm install
+cp .env.example .env
+# điền GEMINI_API_KEY, MONGO_URI, CHROMA_URL thật vào .env
+```
+
+Yêu cầu chạy sẵn: MongoDB (đã có dữ liệu Tour do Backend chính tạo) và ChromaDB
+(`docker run -p 8000:8000 chromadb/chroma`).
+
+### 2. Kiểm thử kết nối Gemini
 
 ```bash
 npm run test:gemini
 ```
-Nếu thấy dòng `✔ Môi trường Gemini API đã sẵn sàng.` nghĩa là API key và model đã đúng.
 
-## 3. Đồng bộ dữ liệu tour thành vector
+### 3. Đồng bộ dữ liệu tour thành vector
 
 ```bash
 npm run sync:vectors
+# hoặc đồng bộ lại toàn bộ, kể cả tour đã synced:
+npm run sync:vectors -- --force
 ```
-Script sẽ:
-1. Lấy các tour `status: published` chưa được đồng bộ.
-2. Tách mỗi tour thành các chunk (overview / itinerary / policy).
-3. Gọi Gemini Embedding API sinh vector cho từng chunk.
-4. Lưu vào ChromaDB, đồng thời đánh dấu `vectorSync.isSynced = true` trong MongoDB.
 
-Chạy lại toàn bộ (kể cả tour đã sync): `npm run sync:vectors -- --force`
-
-## 4. Test truy vấn semantic search
+### 4. Kiểm thử truy vấn ngữ nghĩa
 
 ```bash
 npm run query:test -- "Tôi muốn đi biển 3 ngày, ngân sách 5 triệu"
 ```
 
-## Cấu trúc thư mục
+### 5. Chạy server AI
 
-```
-src/
-├── config/
-│   ├── db.js          # Kết nối MongoDB
-│   ├── gemini.js       # Client Gemini (chat + embedding)
-│   └── chroma.js       # Client ChromaDB
-├── models/
-│   └── Tour.js         # Schema Tour (kế thừa từ báo cáo tuần 1)
-├── utils/
-│   └── tourChunking.js # Logic tách tour thành chunk văn bản
-└── scripts/
-    ├── testGemini.js       # Test nhanh kết nối Gemini
-    ├── syncTourVectors.js  # Script chính: tour -> vector -> ChromaDB
-    └── testQuery.js        # Test semantic search sau khi sync
+```bash
+npm run dev
 ```
 
-## Việc cần làm tiếp (Tuần 3)
+Các endpoint:
 
-- Viết API nhận prompt người dùng → trả về context (hoàn thiện luồng RAG).
-- Ghép nối `testQuery.js` vào một endpoint Express thực tế.
+| Endpoint | Method | Mô tả |
+|---|---|---|
+| `/api/ai/context` | POST | Nhận `{ prompt }`, trả về context liên quan (chưa sinh câu trả lời) |
+| `/api/ai/chat` | POST | Trả về context + câu trả lời tự nhiên (không streaming) |
+| `/api/ai/chat/stream` | POST | Giống `/chat` nhưng streaming qua SSE (dùng cho ChatbotWidget) |
+| `/api/ai/sync-vectors` | POST | Admin kích hoạt đồng bộ vector thủ công (body tùy chọn `{ force: true }`) |
+| `/api/ai/health`, `/health` | GET | Kiểm tra server còn sống |
+
+### 6. Kiểm thử độ chính xác AI
+
+```bash
+npm run test:accuracy
+```
+
+Script chạy một bộ prompt mẫu và dò 2 dấu hiệu lỗi: lọc cứng ngân sách sai, và số
+tiền AI nhắc tới không khớp `basePrice` của tour nào trong context (nghi vấn ảo giác).
+
+### 7. Deploy
+
+```bash
+docker compose up --build -d
+```
+
+`docker-compose.yml` dựng cả `tour-ai-service` và `chromadb` cùng lúc. MongoDB dùng
+chung với Backend chính nên trỏ `MONGO_URI` trong `.env` tới instance đã có sẵn
+(không dựng thêm trong compose này).
+
+## Tích hợp giao diện Chatbot (Tuần 5)
+
+Nhúng `client-widget/ChatbotWidget.jsx` vào bất kỳ trang nào của Client (Home, Tour
+Detail...):
+
+```jsx
+import ChatbotWidget from "./ChatbotWidget";
+
+function App() {
+  return (
+    <>
+      {/* ...nội dung trang... */}
+      <ChatbotWidget aiServiceUrl="http://localhost:4000" />
+    </>
+  );
+}
+```
+
+Widget tự kết nối `/api/ai/chat/stream`, hiển thị câu trả lời chạy chữ theo thời
+gian thực, và đọc to câu trả lời bằng giọng nói trình duyệt (nút 🔊/🔇 để bật/tắt).
+
+## Khó khăn gặp phải và hướng xử lý (tổng hợp)
+
+| Khó khăn | Nguyên nhân | Hướng xử lý |
+|---|---|---|
+| Gemini API báo lỗi 404 model not found | Model `gemini-1.5-flash`/`gemini-2.5-flash` ngừng phục vụ người dùng mới | Chuyển sang SDK `@google/genai` và model GA hiện hành (`gemini-3.5-flash`, `gemini-embedding-001`) |
+| Rủi ro lặp lại khi model tiếp tục đổi | Nhà cung cấp AI cập nhật/deprecate model thường xuyên | Tên model lấy từ `.env`, không hard-code trong source |
+| Kết quả trả về lệch ngân sách người dùng nêu | Semantic search thuần túy vẫn xếp hạng cao tour có mô tả giống nhau dù vượt giá | Thêm bước trích xuất ý định (`intentService`), lọc cứng theo metadata trước khi xếp hạng ngữ nghĩa |
+| Gemini đôi khi trả JSON kèm markdown code fence | Model không luôn tuân thủ tuyệt đối định dạng yêu cầu | Xử lý làm sạch chuỗi trước `JSON.parse`, có try/catch fallback về `null` |
+| Nhiều chunk cùng một tour lọt vào top-k | Một tour tách thành nhiều chunk khi embedding | Gom nhóm theo `tourId`, loại trùng trước khi truy vấn MongoDB |
+| Độ trễ phản hồi cao khi chờ AI sinh xong toàn bộ câu trả lời | Gọi Gemini generation đồng bộ, không stream | Dùng `generateContentStream` + Server-Sent Events, đẩy từng đoạn text tới client ngay khi sinh ra |
