@@ -1,0 +1,66 @@
+# =============================================================
+#  .gitignore — TTTN
+#  Muc tieu: KHONG bao gio push nham file khong lien quan den du an,
+#  ke ca khi lo dung `git add .`.
+#  LUU Y: .gitignore KHONG ho tro comment cuoi dong -> moi comment
+#  phai o dong rieng, neu khong ky tu "#" se bi coi la mot phan cua pattern.
+#  File DA duoc track tu truoc se KHONG bi .gitignore anh huong.
+# =============================================================
+
+# --- Bi mat / bien moi truong (TUYET DOI khong push) ---
+.env
+.env.*
+# cho phep push file mau .env.example (neu co)
+!.env.example
+*.pem
+*.key
+
+# --- Phu thuoc & build sinh tu dong ---
+node_modules/
+dist/
+build/
+.vite/
+.cache/
+*.tsbuildinfo
+
+# --- Python (dung boi sync.py / ai-server) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# --- Log & bao cao tam ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+
+# --- File Claude / agent (KHONG BAO GIO push - tranh bi tru diem) ---
+# .agents/ la ban mirror local do sync.py sinh -> khong push.
+.agents/
+# .claude/: bo qua TOAN BO (settings, skills, handoff, cau hinh may-local).
+.claude/
+# CLAUDE.md & AGENTS.md do sync.py sinh -> chi dung local, khong push.
+CLAUDE.md
+AGENTS.md
+# PROJECT.md (nguon luat) + sync.py: chi dung local, khong push.
+PROJECT.md
+sync.py
+# Agents/: thu muc chua toan bo file Claude/agent + tham chieu (app.html) - local only.
+Agents/
+
+# --- File he dieu hanh / rac ---
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+# --- Cau hinh editor/IDE ca nhan ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
