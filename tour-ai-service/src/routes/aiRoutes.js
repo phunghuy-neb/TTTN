@@ -1,44 +1,30 @@
 const express = require("express");
-const { getRagContext } = require("../services/ragService");
-const { generateChatAnswer, streamChatAnswer } = require("../services/chatService");
+const { converse, converseStream } = require("../services/chatService");
 const { syncTourVectors } = require("../services/syncService");
+const sessionService = require("../services/sessionService");
 
 const router = express.Router();
 
 /**
- * POST /api/ai/context
- * Nhiệm vụ chính Tuần 3 — nhận { prompt }, trả về context liên quan
- * (chưa sinh câu trả lời tự nhiên).
- */
-router.post("/context", async (req, res) => {
-  try {
-    const { prompt } = req.body;
-    if (!prompt || typeof prompt !== "string") {
-      return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
-    }
-
-    const { intent, tours, contextText, matchedChunks } = await getRagContext(prompt);
-    res.json({ intent, tours, contextText, matchedChunks });
-  } catch (err) {
-    console.error("[POST /api/ai/context]", err);
-    res.status(500).json({ error: "Lỗi xử lý context", detail: err.message });
-  }
-});
-
-/**
  * POST /api/ai/chat
- * Trả về cả context lẫn câu trả lời tự nhiên do Gemini sinh dựa trên context
- * (không streaming — dùng khi client không cần trải nghiệm gõ chữ realtime).
+ * Body: { sessionId?: string, message: string }
+ * Nếu không truyền sessionId, hệ thống tự tạo mới và trả về trong response —
+ * client phải lưu lại (localStorage/state) và gửi kèm ở các lượt chat sau,
+ * nếu không AI sẽ mất ngữ cảnh và xử lý mỗi câu như hội thoại mới.
+ *
+ * Response có thể là 1 trong 2 dạng, phân biệt bằng field "clarifying":
+ *   clarifying = true  -> AI đang hỏi lại, "tours" luôn rỗng.
+ *   clarifying = false -> AI đã tư vấn, kèm "tours" liên quan.
  */
 router.post("/chat", async (req, res) => {
   try {
-    const { prompt } = req.body;
-    if (!prompt || typeof prompt !== "string") {
-      return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
+    const { sessionId, message } = req.body;
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Thiếu trường 'message' (string) trong body" });
     }
 
-    const { reply, intent, tours } = await generateChatAnswer(prompt);
-    res.json({ reply, intent, tours });
+    const result = await converse(sessionId, message);
+    res.json(result);
   } catch (err) {
     console.error("[POST /api/ai/chat]", err);
     res.status(500).json({ error: "Lỗi xử lý chat", detail: err.message });
@@ -47,14 +33,16 @@ router.post("/chat", async (req, res) => {
 
 /**
  * POST /api/ai/chat/stream
- * Tuần 4 — phiên bản streaming của /api/ai/chat, dùng Server-Sent Events (SSE).
- * Mỗi sự kiện "chunk" chứa một đoạn text nhỏ, sự kiện "done" báo kết thúc kèm
- * intent + tours để Frontend hiển thị card gợi ý tour bên cạnh câu trả lời.
+ * Body giống /api/ai/chat. Trả về Server-Sent Events:
+ *   event: session -> { sessionId }               (gửi ngay đầu, để client lưu lại)
+ *   event: chunk   -> { text }                      (nhiều lần, từng đoạn văn bản)
+ *   event: done    -> { tours, clarifying, intent }  (kết thúc)
+ *   event: error   -> { message }
  */
 router.post("/chat/stream", async (req, res) => {
-  const { prompt } = req.body;
-  if (!prompt || typeof prompt !== "string") {
-    return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
+  const { sessionId, message } = req.body;
+  if (!message || typeof message !== "string") {
+    return res.status(400).json({ error: "Thiếu trường 'message' (string) trong body" });
   }
 
   res.writeHead(200, {
@@ -69,10 +57,11 @@ router.post("/chat/stream", async (req, res) => {
   };
 
   try {
-    const { intent, tours, fullReply } = await streamChatAnswer(prompt, (chunkText) => {
+    const result = await converseStream(sessionId, message, (chunkText) => {
       send("chunk", { text: chunkText });
     });
-    send("done", { intent, tours, fullReply });
+    send("session", { sessionId: result.sessionId });
+    send("done", { tours: result.tours, clarifying: result.clarifying, intent: result.intent });
   } catch (err) {
     console.error("[POST /api/ai/chat/stream]", err);
     send("error", { message: err.message });
@@ -81,10 +70,15 @@ router.post("/chat/stream", async (req, res) => {
   }
 });
 
+/** DELETE /api/ai/session/:sessionId — reset hội thoại, dùng khi user bấm "Chat mới". */
+router.delete("/session/:sessionId", (req, res) => {
+  sessionService.resetSession(req.params.sessionId);
+  res.json({ ok: true });
+});
+
 /**
  * POST /api/ai/sync-vectors
- * Cho phép Admin (Backend chính gọi hộ, hoặc gọi trực tiếp) kích hoạt đồng bộ
- * dữ liệu Tour -> ChromaDB thủ công, theo đặc tả "Quản trị hệ thống AI (Vector Sync)".
+ * Cho phép Admin kích hoạt đồng bộ dữ liệu Tour -> ChromaDB thủ công.
  * Body tùy chọn: { force: boolean } — true để đồng bộ lại toàn bộ, kể cả tour đã synced.
  */
 router.post("/sync-vectors", async (req, res) => {

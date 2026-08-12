@@ -1,17 +1,19 @@
 const Tour = require("../models/Tour");
 const { getTourCollection } = require("../config/chroma");
 const { embedText } = require("../config/gemini");
-const { extractIntent } = require("./intentService");
 
 /**
- * Luồng RAG hoàn chỉnh (Tuần 3), gồm 6 bước:
- *  1. Trích xuất ý định từ prompt (intentService)
- *  2. Sinh vector embedding cho prompt gốc
- *  3. Truy vấn ChromaDB: semantic search kết hợp lọc cứng theo ý định
- *  4. Gom nhóm chunk kết quả theo tourId, loại trùng, giữ thứ tự liên quan
- *  5. Lấy dữ liệu đầy đủ, chính xác của các tour đó từ MongoDB
+ * Luồng truy hồi (Retrieval) trong RAG, gồm 5 bước — KHÔNG còn tự trích xuất ý
+ * định ở đây nữa: intent + searchQuery được `conversationEngine.js` phân tích
+ * từ TOÀN BỘ lịch sử hội thoại và truyền vào, để một tour có thể được tìm thấy
+ * đúng dựa trên ràng buộc nêu rải rác qua nhiều lượt chat, không chỉ câu cuối.
+ *
+ *  1. Sinh vector embedding cho searchQuery (đã tổng hợp cả hội thoại)
+ *  2. Truy vấn ChromaDB: semantic search kết hợp lọc cứng theo intent
+ *  3. Gom nhóm chunk kết quả theo tourId, loại trùng, giữ thứ tự liên quan
+ *  4. Lấy dữ liệu đầy đủ, chính xác của các tour đó từ MongoDB
  *     (không lấy giá/thông tin từ vector, tránh sai lệch)
- *  6. Ghép thành contextText — chuỗi văn bản sẵn sàng đưa vào prompt Generation
+ *  5. Ghép thành contextText — chuỗi văn bản sẵn sàng đưa vào prompt Generation
  *
  * Nguyên tắc cốt lõi (giữ từ Tuần 1): ChromaDB chỉ dùng để xác định
  * "tour nào liên quan", còn dữ liệu dùng để TRẢ LỜI luôn lấy trực tiếp
@@ -78,18 +80,17 @@ function buildContextText(tours) {
 }
 
 /**
- * Thực hiện đầy đủ luồng RAG cho một prompt người dùng.
- * @param {string} prompt
- * @returns {Promise<{intent: object, tours: Array, contextText: string, matchedChunks: Array}>}
+ * Thực hiện luồng truy hồi dữ liệu tour dựa trên intent + searchQuery đã được
+ * conversationEngine tổng hợp từ toàn bộ hội thoại.
+ * @param {string} searchQuery - câu truy vấn tổng hợp (không phải chỉ tin nhắn cuối)
+ * @param {{maxPrice: number|null, region: string|null, days: number|null}} intent
+ * @returns {Promise<{tours: Array, contextText: string, matchedChunks: Array}>}
  */
-async function getRagContext(prompt) {
-  // Bước 1: trích xuất ý định
-  const intent = await extractIntent(prompt);
+async function getRagContext(searchQuery, intent) {
+  // Bước 1: sinh vector embedding cho searchQuery đã tổng hợp cả hội thoại
+  const promptVector = await embedText(searchQuery);
 
-  // Bước 2: sinh vector embedding cho prompt gốc
-  const promptVector = await embedText(prompt);
-
-  // Bước 3: truy vấn ChromaDB (semantic search + lọc cứng theo ý định)
+  // Bước 2: truy vấn ChromaDB (semantic search + lọc cứng theo ý định)
   const collection = await getTourCollection();
   const where = buildWhereFilter(intent);
 
@@ -99,10 +100,10 @@ async function getRagContext(prompt) {
     where,
   });
 
-  // Bước 4: gom nhóm theo tourId, loại trùng, giữ thứ tự liên quan
+  // Bước 3: gom nhóm theo tourId, loại trùng, giữ thứ tự liên quan
   const orderedTourIds = dedupeTourIdsInOrder(chromaResult);
 
-  // Bước 5: lấy dữ liệu đầy đủ, chính xác từ MongoDB (không lấy giá từ vector)
+  // Bước 4: lấy dữ liệu đầy đủ, chính xác từ MongoDB (không lấy giá từ vector)
   const toursFromDb = await Tour.find({
     _id: { $in: orderedTourIds },
     status: "published",
@@ -114,7 +115,7 @@ async function getRagContext(prompt) {
     .map((id) => toursById.get(id))
     .filter(Boolean);
 
-  // Bước 6: ghép contextText
+  // Bước 5: ghép contextText
   const contextText = tours.length
     ? buildContextText(tours)
     : "Không tìm thấy tour phù hợp với yêu cầu.";
@@ -125,7 +126,7 @@ async function getRagContext(prompt) {
     distance: chromaResult.distances?.[0]?.[i] ?? null,
   }));
 
-  return { intent, tours, contextText, matchedChunks };
+  return { tours, contextText, matchedChunks };
 }
 
 module.exports = { getRagContext };

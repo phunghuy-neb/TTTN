@@ -17,11 +17,11 @@ async function main() {
   const port = process.env.AI_SERVICE_PORT || 4000;
   app.listen(port, () => {
     console.log(`[tour-ai-service] Đang chạy tại http://localhost:${port}`);
-    console.log(`  - POST /api/ai/context`);
-    console.log(`  - POST /api/ai/chat`);
-    console.log(`  - POST /api/ai/chat/stream`);
-    console.log(`  - POST /api/ai/sync-vectors`);
-    console.log(`  - GET  /api/ai/health`);
+    console.log(`  - POST   /api/ai/chat`);
+    console.log(`  - POST   /api/ai/chat/stream`);
+    console.log(`  - DELETE /api/ai/session/:sessionId`);
+    console.log(`  - POST   /api/ai/sync-vectors`);
+    console.log(`  - GET    /api/ai/health`);
   });
 }
 

@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * ChatbotWidget — Tuần 5 (Mai Tuấn Anh - task)
- * "Xây dựng giao diện Chatbot trên Client. Tích hợp công nghệ TTS
- * (Text-to-Speech) để AI có thể đọc phản hồi."
+ * ChatbotWidget — hội thoại đa lượt, không còn xử lý mỗi câu độc lập.
  *
- * Component độc lập, nhúng vào bất kỳ trang Client nào (Home, Tour Detail...).
- * - Nút chat nổi cố định (theo wireframe Tuần 1 - trang Home).
- * - Kết nối tới AI Service qua POST /api/ai/chat/stream (Server-Sent Events)
- *   để hiển thị câu trả lời chạy chữ mượt mà (không phải chờ toàn bộ câu trả lời).
- * - TTS dùng Web Speech API có sẵn trên trình duyệt (SpeechSynthesis), không cần
- *   backend riêng cho giọng nói — bật/tắt bằng nút loa trên mỗi tin nhắn AI.
+ * Khác biệt so với bản filter-có-giao-diện-chat trước đây:
+ *  - Giữ `sessionId` xuyên suốt phiên (lưu localStorage để refresh trang vẫn
+ *    tiếp tục hội thoại cũ), gửi kèm mỗi lượt để AI Service gộp được ràng
+ *    buộc nêu rải rác qua nhiều câu.
+ *  - Khi AI trả về `clarifying: true` (đang hỏi lại vì chưa đủ thông tin),
+ *    widget hiển thị tin nhắn đó như một câu hỏi bình thường của trợ lý —
+ *    KHÔNG hiển thị card tour rỗng, không giả vờ đã tư vấn.
+ *  - Có nút "Cuộc trò chuyện mới" để xóa session, bắt đầu lại từ đầu.
  *
  * Props:
  *  - aiServiceUrl: base URL của tour-ai-service, mặc định http://localhost:4000
@@ -20,44 +20,66 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      text: "Xin chào! Tôi là Hướng dẫn viên ảo. Bạn muốn đi đâu, ngân sách và số ngày dự kiến là bao nhiêu?",
+      text: "Xin chào! Tôi là Hướng dẫn viên ảo. Bạn đang muốn tìm loại tour như thế nào?",
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [sessionId, setSessionId] = useState(null);
   const bottomRef = useRef(null);
+
+  useEffect(() => {
+    const saved = typeof window !== "undefined" ? window.localStorage.getItem("tour_ai_session_id") : null;
+    if (saved) setSessionId(saved);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, open]);
 
-  function speak(text) {
-    if (!ttsEnabled) return;
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
+  function persistSessionId(id) {
+    setSessionId(id);
+    if (typeof window !== "undefined") window.localStorage.setItem("tour_ai_session_id", id);
+  }
 
-    window.speechSynthesis.cancel(); // ngắt câu đang đọc dở (nếu có)
+  function speak(text) {
+    if (!ttsEnabled || typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "vi-VN";
     window.speechSynthesis.speak(utterance);
   }
 
-  async function sendMessage() {
-    const prompt = input.trim();
-    if (!prompt || loading) return;
+  async function startNewConversation() {
+    if (sessionId) {
+      try {
+        await fetch(`${aiServiceUrl}/api/ai/session/${sessionId}`, { method: "DELETE" });
+      } catch (err) {
+        console.warn("[ChatbotWidget] Không xóa được session cũ:", err);
+      }
+    }
+    if (typeof window !== "undefined") window.localStorage.removeItem("tour_ai_session_id");
+    setSessionId(null);
+    setMessages([
+      { role: "assistant", text: "Xin chào! Tôi là Hướng dẫn viên ảo. Bạn đang muốn tìm loại tour như thế nào?" },
+    ]);
+  }
 
-    setMessages((prev) => [...prev, { role: "user", text: prompt }]);
+  async function sendMessage() {
+    const message = input.trim();
+    if (!message || loading) return;
+
+    setMessages((prev) => [...prev, { role: "user", text: message }]);
     setInput("");
     setLoading(true);
-
-    // Thêm sẵn một message rỗng của assistant để cập nhật dần khi stream chạy
     setMessages((prev) => [...prev, { role: "assistant", text: "", tours: [] }]);
 
     try {
       const res = await fetch(`${aiServiceUrl}/api/ai/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ sessionId, message }),
       });
 
       if (!res.body) throw new Error("Trình duyệt không hỗ trợ streaming response");
@@ -66,7 +88,6 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
       const decoder = new TextDecoder();
       let buffer = "";
       let fullText = "";
-      let finalTours = [];
 
       while (true) {
         const { value, done } = await reader.read();
@@ -74,7 +95,7 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
 
         buffer += decoder.decode(value, { stream: true });
         const events = buffer.split("\n\n");
-        buffer = events.pop(); // phần chưa hoàn chỉnh, giữ lại cho lần đọc sau
+        buffer = events.pop();
 
         for (const evt of events) {
           const eventLine = evt.split("\n").find((l) => l.startsWith("event:"));
@@ -84,7 +105,9 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
           const eventType = eventLine.replace("event:", "").trim();
           const data = JSON.parse(dataLine.replace("data:", "").trim());
 
-          if (eventType === "chunk") {
+          if (eventType === "session") {
+            persistSessionId(data.sessionId);
+          } else if (eventType === "chunk") {
             fullText += data.text;
             setMessages((prev) => {
               const updated = [...prev];
@@ -92,17 +115,17 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
               return updated;
             });
           } else if (eventType === "done") {
-            finalTours = data.tours || [];
             setMessages((prev) => {
               const updated = [...prev];
               updated[updated.length - 1] = {
                 role: "assistant",
-                text: data.fullReply || fullText,
-                tours: finalTours,
+                text: fullText,
+                tours: data.tours || [],
+                clarifying: data.clarifying,
               };
               return updated;
             });
-            speak(data.fullReply || fullText);
+            speak(fullText);
           } else if (eventType === "error") {
             throw new Error(data.message);
           }
@@ -137,6 +160,9 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
           <div style={styles.header}>
             <span>Hướng dẫn viên ảo</span>
             <div style={{ display: "flex", gap: 8 }}>
+              <button style={styles.iconButton} title="Cuộc trò chuyện mới" onClick={startNewConversation}>
+                ↺
+              </button>
               <button
                 style={styles.iconButton}
                 title={ttsEnabled ? "Tắt đọc giọng nói" : "Bật đọc giọng nói"}
@@ -157,6 +183,7 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
                 style={{
                   ...styles.bubble,
                   ...(m.role === "user" ? styles.userBubble : styles.assistantBubble),
+                  ...(m.clarifying ? styles.clarifyingBubble : {}),
                 }}
               >
                 <div>{m.text || "…"}</div>
@@ -179,7 +206,7 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
             <input
               style={styles.input}
               value={input}
-              placeholder="Nhập yêu cầu, ví dụ: đi biển 3 ngày, ngân sách 5 triệu..."
+              placeholder="Nhắn cho hướng dẫn viên ảo..."
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               disabled={loading}
@@ -201,57 +228,28 @@ export default function ChatbotWidget({ aiServiceUrl = "http://localhost:4000" }
 const styles = {
   wrapper: { position: "fixed", bottom: 24, right: 24, zIndex: 1000, fontFamily: "sans-serif" },
   fab: {
-    width: 56,
-    height: 56,
-    borderRadius: "50%",
-    border: "none",
-    background: "#0f766e",
-    color: "#fff",
-    fontSize: 24,
-    cursor: "pointer",
+    width: 56, height: 56, borderRadius: "50%", border: "none",
+    background: "#0f766e", color: "#fff", fontSize: 24, cursor: "pointer",
     boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
   },
   panel: {
-    width: 340,
-    height: 460,
-    background: "#fff",
-    borderRadius: 12,
-    boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
-    display: "flex",
-    flexDirection: "column",
-    marginBottom: 12,
-    overflow: "hidden",
+    width: 340, height: 480, background: "#fff", borderRadius: 12,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.2)", display: "flex", flexDirection: "column",
+    marginBottom: 12, overflow: "hidden",
   },
   header: {
-    background: "#0f766e",
-    color: "#fff",
-    padding: "10px 14px",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    fontWeight: 600,
+    background: "#0f766e", color: "#fff", padding: "10px 14px",
+    display: "flex", justifyContent: "space-between", alignItems: "center", fontWeight: 600,
   },
-  iconButton: {
-    background: "transparent",
-    border: "none",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 14,
-  },
+  iconButton: { background: "transparent", border: "none", color: "#fff", cursor: "pointer", fontSize: 14 },
   messages: { flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 },
   bubble: { maxWidth: "85%", padding: "8px 12px", borderRadius: 10, fontSize: 14, lineHeight: 1.4 },
   userBubble: { alignSelf: "flex-end", background: "#0f766e", color: "#fff" },
   assistantBubble: { alignSelf: "flex-start", background: "#f1f5f9", color: "#0f172a" },
+  clarifyingBubble: { border: "1px dashed #94a3b8" },
   tourList: { marginTop: 8, display: "flex", flexDirection: "column", gap: 6 },
   tourCard: { background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: "6px 8px", fontSize: 13 },
   inputRow: { display: "flex", borderTop: "1px solid #e2e8f0", padding: 8, gap: 8 },
   input: { flex: 1, border: "1px solid #e2e8f0", borderRadius: 8, padding: "8px 10px", fontSize: 14 },
-  sendButton: {
-    background: "#0f766e",
-    color: "#fff",
-    border: "none",
-    borderRadius: 8,
-    padding: "0 14px",
-    cursor: "pointer",
-  },
+  sendButton: { background: "#0f766e", color: "#fff", border: "none", borderRadius: 8, padding: "0 14px", cursor: "pointer" },
 };
