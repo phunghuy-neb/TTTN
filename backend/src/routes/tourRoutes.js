@@ -10,8 +10,12 @@ import { getTours, getTour, uploadImage } from '../controllers/tourController.js
 import { protect } from '../middleware/auth.js'
 import requireAdmin from '../middleware/requireAdmin.js'
 import upload from '../middleware/upload.js'
+import { createReview } from '../controllers/reviewController.js'
 
 const router = Router()
+
+// Người dùng chỉ được đánh giá bằng một booking đã hoàn thành của chính mình.
+router.post('/:tourId/reviews', protect, upload.array('images', 5), createReview)
 
 // ── Public routes ─────────────────────────────────────────────
 // GET  /api/tours              → Danh sách tour (public, nhưng middleware tuỳ chọn)

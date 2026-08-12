@@ -70,11 +70,12 @@ tour-ai-service/
 cd tour-ai-service
 npm install
 cp .env.example .env
-# điền GEMINI_API_KEY, MONGO_URI, CHROMA_URL thật vào .env
+# điền GEMINI_API_KEY, MONGO_URI, CHROMA_URL và AI_INTERNAL_API_KEY vào .env
 ```
 
 Yêu cầu chạy sẵn: MongoDB (đã có dữ liệu Tour do Backend chính tạo) và ChromaDB
-(`docker run -p 8000:8000 chromadb/chroma`).
+(`docker run -p 127.0.0.1:8000:8000 chromadb/chroma`). `AI_INTERNAL_API_KEY` phải là
+chuỗi ngẫu nhiên mạnh và trùng `AI_SERVICE_API_KEY` trong `.env` Backend.
 
 ### 2. Kiểm thử kết nối Gemini
 
@@ -106,11 +107,14 @@ Các endpoint:
 
 | Endpoint | Method | Mô tả |
 |---|---|---|
-| `/api/ai/context` | POST | Nhận `{ prompt }`, trả về context liên quan (chưa sinh câu trả lời) |
+| `/api/ai/context` | POST | Nhận `{ prompt, tourContext? }`, trả về context liên quan (chưa sinh câu trả lời) |
 | `/api/ai/chat` | POST | Trả về context + câu trả lời tự nhiên (không streaming) |
 | `/api/ai/chat/stream` | POST | Giống `/chat` nhưng streaming qua SSE (dùng cho ChatbotWidget) |
 | `/api/ai/sync-vectors` | POST | Admin kích hoạt đồng bộ vector thủ công (body tùy chọn `{ force: true }`) |
 | `/api/ai/health`, `/health` | GET | Kiểm tra server còn sống |
+
+Mọi endpoint `/api/ai/*` yêu cầu header `x-internal-api-key`; chỉ `/health` ở root
+được mở cho health check. FE không gọi trực tiếp service này mà đi qua Backend.
 
 ### 6. Kiểm thử độ chính xác AI
 
@@ -127,9 +131,11 @@ tiền AI nhắc tới không khớp `basePrice` của tour nào trong context (
 docker compose up --build -d
 ```
 
-`docker-compose.yml` dựng cả `tour-ai-service` và `chromadb` cùng lúc. MongoDB dùng
+`docker-compose.yml` dựng cả `tour-ai-service` và `chromadb` cùng lúc. AI chỉ bind
+`127.0.0.1:4000`; ChromaDB chỉ nằm trong mạng Docker, không publish ra host. MongoDB dùng
 chung với Backend chính nên trỏ `MONGO_URI` trong `.env` tới instance đã có sẵn
-(không dựng thêm trong compose này).
+(không dựng thêm trong compose này). Khi MongoDB chạy trên máy host và AI chạy
+trong Docker Desktop, dùng `host.docker.internal` thay cho `localhost` trong `MONGO_URI`.
 
 ## Tích hợp giao diện Chatbot (Tuần 5)
 

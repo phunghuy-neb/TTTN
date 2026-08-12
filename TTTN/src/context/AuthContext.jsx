@@ -3,6 +3,7 @@ import {
   login as loginService,
   register as registerService,
   getMe,
+  logout as logoutService,
 } from '../services/authService.js'
 import { onSessionExpired } from '../services/authEvents.js'
 
@@ -11,17 +12,6 @@ const STORAGE_KEY = 'auth'
 
 const AuthContext = createContext(null)
 
-// Đọc role từ payload JWT (base64url) — nguồn phụ khi saved.user thiếu role
-// (phiên lưu từ trước khi có phân quyền). Nguồn chính thức vẫn là /auth/me.
-function docRoleTuToken(token) {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
-    return payload.role || null
-  } catch {
-    return null
-  }
-}
-
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -29,41 +19,36 @@ export function AuthProvider({ children }) {
   // Khôi phục phiên khi mount: dùng ngay dữ liệu localStorage để không chớp giao diện,
   // rồi gọi /auth/me xác thực lại với server để lấy role/thông tin mới nhất.
   useEffect(() => {
-    let token = null
+    let hadCachedUser = false
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw) {
         const saved = JSON.parse(raw)
         if (saved?.user) {
-          token = saved.token || null
-          const role = saved.user.role || (token ? docRoleTuToken(token) : null)
-          setUser(role ? { ...saved.user, role } : saved.user)
+          hadCachedUser = true
+          // Xóa token cũ nếu trình duyệt từng chạy phiên bản lưu JWT trong localStorage.
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: saved.user }))
+          setUser(saved.user)
         }
       }
     } catch {
       // Dữ liệu hỏng — xóa để tránh lỗi lặp lại
       localStorage.removeItem(STORAGE_KEY)
     }
-    setLoading(false)
+    if (hadCachedUser) setLoading(false)
 
-    // Xác thực lại với server. Token hỏng/hết hạn → api.js xóa phiên và phát sự kiện
-    // session-expired (listener bên dưới reset user). Lỗi mạng → giữ tạm phiên local.
-    if (token) {
-      getMe().then((res) => {
-        if (res.success && res.user) {
-          setUser(res.user)
-          try {
-            const raw = localStorage.getItem(STORAGE_KEY)
-            const saved = raw ? JSON.parse(raw) : null
-            if (saved?.token) {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...saved, user: res.user }))
-            }
-          } catch {
-            // localStorage hỏng — bỏ qua, state trong bộ nhớ đã đúng
-          }
-        }
-      })
-    }
+    // JWT nằm trong cookie HttpOnly; luôn gọi /me để trình duyệt gửi cookie và
+    // khôi phục phiên. localStorage chỉ cache dữ liệu hiển thị, không còn secret.
+    getMe().then((res) => {
+      if (res.success && res.user) {
+        setUser(res.user)
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: res.user }))
+      } else if (res.code !== 'NETWORK_ERROR') {
+        setUser(null)
+        localStorage.removeItem(STORAGE_KEY)
+      }
+      setLoading(false)
+    })
   }, [])
 
   // Tầng HTTP phát hiện 401 trên request có auth (token hết hạn/bị sửa) → reset state
@@ -74,7 +59,7 @@ export function AuthProvider({ children }) {
   const login = async (payload) => {
     const res = await loginService(payload)
     if (res.success === true) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: res.user, token: res.token }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: res.user }))
       setUser(res.user)
     }
     return res
@@ -84,7 +69,7 @@ export function AuthProvider({ children }) {
   const register = async (payload) => {
     const res = await registerService(payload)
     if (res.success === true) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: res.user, token: res.token }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: res.user }))
       setUser(res.user)
     }
     return res
@@ -92,6 +77,7 @@ export function AuthProvider({ children }) {
 
   // Đăng xuất — xóa phiên
   const logout = () => {
+    logoutService().catch(() => {})
     localStorage.removeItem(STORAGE_KEY)
     setUser(null)
   }
@@ -100,11 +86,7 @@ export function AuthProvider({ children }) {
   const updateUser = (userMoi) => {
     setUser(userMoi)
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      const saved = raw ? JSON.parse(raw) : null
-      if (saved?.token) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...saved, user: userMoi }))
-      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ user: userMoi }))
     } catch {
       // localStorage hỏng — bỏ qua, state trong bộ nhớ đã đúng
     }

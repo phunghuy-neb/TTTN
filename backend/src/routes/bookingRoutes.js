@@ -7,6 +7,7 @@ import {
   createBooking,
   getMyBookings,
   getBooking,
+  getBookingByCode,
   cancelBooking,
 } from '../controllers/bookingController.js'
 import { protect } from '../middleware/auth.js'
@@ -21,6 +22,9 @@ router.post('/', createBooking)
 
 // GET  /api/bookings/my        → Xem lịch sử đặt tour của bản thân
 router.get('/my', getMyBookings)
+
+// Đặt trước /:id để "code" không bị hiểu là ObjectId.
+router.get('/code/:code', getBookingByCode)
 
 // GET  /api/bookings/:id       → Xem chi tiết 1 đơn (chủ đơn hoặc admin)
 router.get('/:id', getBooking)

@@ -3,6 +3,7 @@
 //  Schema đơn đặt tour — khớp thiết kế Tuần 1 trong báo cáo
 // ============================================================
 import mongoose from 'mongoose'
+import crypto from 'crypto'
 
 // ── Sub-schema: Thông tin liên hệ người đặt ─────────────────
 const ContactSchema = new mongoose.Schema(
@@ -75,6 +76,29 @@ const BookingSchema = new mongoose.Schema(
     },
 
     // Tổng tiền = unitPrice × guests
+    originalPrice: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+
+    discountAmount: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
+
+    voucher: {
+      type: new mongoose.Schema({
+        voucherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Voucher' },
+        code: { type: String, uppercase: true },
+        discountType: { type: String, enum: ['percentage', 'fixed'] },
+        value: { type: Number },
+        maxDiscount: { type: Number, default: 0 },
+      }, { _id: false }),
+      default: null,
+    },
+
     totalPrice: {
       type: Number,
       required: true,
@@ -113,6 +137,14 @@ const BookingSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Thời điểm hết hạn giữ chỗ. Không dùng TTL index vì booking phải được giữ lại
+    // cho lịch sử; worker nền sẽ chuyển pending_payment -> cancelled và hoàn chỗ.
+    paymentExpiresAt: {
+      type: Date,
+      required: true,
+      index: true,
+    },
+
     // Đơn đã được khách đánh giá tour hay chưa
     reviewed: {
       type: Boolean,
@@ -126,7 +158,8 @@ const BookingSchema = new mongoose.Schema(
       default: '',
     },
 
-    // Khóa chống đơn trùng (idempotency): `user:tour:departure:ô-thời-gian-10-giây`.
+    // Khóa chống đơn trùng: `user:idempotencyKey` do client tạo một lần
+    // cho mỗi ý định đặt và giữ nguyên khi retry.
     // Kiểm-rồi-ghi trong controller không chặn được request SONG SONG (cả năm cùng
     // thấy "chưa có đơn" rồi cùng tạo), nên chốt thật nằm ở unique index dưới đây —
     // MongoDB chỉ cho một request thắng, các request còn lại nhận E11000 và được trả
@@ -144,6 +177,12 @@ const BookingSchema = new mongoose.Schema(
           from: { type: String, required: true },
           to: { type: String, required: true },
           byUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+          source: {
+            type: String,
+            enum: ['customer', 'admin', 'payment', 'system'],
+            default: 'system',
+          },
+          reason: { type: String, trim: true, default: '' },
           at: { type: Date, default: Date.now },
         },
         { _id: false }
@@ -164,13 +203,14 @@ BookingSchema.index(
 )
 BookingSchema.index({ tour: 1 })
 BookingSchema.index({ status: 1 })
+BookingSchema.index({ status: 1, paymentExpiresAt: 1 })
 // bookingCode: unique index đã tạo tự động qua { unique: true } trong field definition
 
 // ── Pre-save: Tự động sinh bookingCode nếu chưa có ───────────
 BookingSchema.pre('save', function (next) {
   if (!this.bookingCode) {
     const timestamp = Date.now().toString()
-    const random = Math.random().toString(36).toUpperCase().slice(2, 6)
+    const random = crypto.randomBytes(3).toString('hex').toUpperCase()
     this.bookingCode = `VV-${timestamp.slice(-7)}-${random}`
   }
   next()

@@ -6,7 +6,7 @@
 import { request } from './api.js'
 
 // Tạo đơn đặt tour (UC-08).
-// payload: { tourId, departureId, guests, contact: { name, phone, email }, paymentMethod, note }
+// payload: { tourId, departureId, guests, contact, paymentMethod, note, idempotencyKey }
 // departureId là `departures[]._id` nhận từ API tour — khóa ổn định, Backend trừ/hoàn chỗ
 // theo id này nên admin đổi ngày đợt cũng không ảnh hưởng đơn đã đặt.
 export async function createBooking(payload) {
@@ -14,6 +14,20 @@ export async function createBooking(payload) {
   if (res.success === false) return res
 
   return { success: true, data: res.booking, message: res.message }
+}
+
+// Tra cứu an toàn theo mã hiển thị sau khi quay về từ VNPay/MoMo.
+export async function getBookingByCode(code) {
+  const res = await request(`/bookings/code/${encodeURIComponent(code)}`, { auth: true })
+  if (res.success === false) return res
+  return { success: true, data: res.booking }
+}
+
+// Chi tiết một đơn theo id — Backend tự kiểm tra chủ đơn hoặc quyền admin.
+export async function getBooking(id) {
+  const res = await request(`/bookings/${encodeURIComponent(id)}`, { auth: true })
+  if (res.success === false) return res
+  return { success: true, data: res.booking }
 }
 
 // Lịch sử đặt tour của bản thân (UC-10) — lọc theo trạng thái + phân trang

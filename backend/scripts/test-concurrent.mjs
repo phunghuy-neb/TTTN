@@ -7,8 +7,8 @@
 //  availableSlots trong DB = 0 (không âm, không hụt).
 //
 //  VÌ SAO PHẢI LÀ 20 KHÁCH KHÁC NHAU: từ Batch 8, Backend có khóa chống
-//  đơn trùng (idemKey) — cùng một người gửi nhiều yêu cầu giống hệt trong
-//  10 giây chỉ tính là MỘT lần đặt. Dùng chung một tài khoản sẽ đo nhầm
+//  đơn trùng (idempotencyKey) — cùng một ý định gửi lại chỉ tính là MỘT lần.
+//  Dùng chung một tài khoản sẽ đo nhầm
 //  cơ chế chống-trùng thay vì cơ chế chống-oversell.
 //
 //  Yêu cầu: Backend đang chạy (npm run dev) + MongoDB.
@@ -94,6 +94,7 @@ async function main() {
           guests: 1,
           contact: { name: `Khách ${i + 1}`, phone: '0900000001', email: `khach${i + 1}${DUOI_EMAIL}` },
           paymentMethod: 'later',
+          idempotencyKey: `concurrent_test_${String(i + 1).padStart(3, '0')}_${String(depId)}`,
         }),
       }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
     )

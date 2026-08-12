@@ -5,7 +5,7 @@
 //  TODO(ai): thay bằng service của Tuấn Anh — chỉ cần set AI_SERVICE_URL
 //  trong .env. Hợp đồng đã chốt:
 //    POST {AI_SERVICE_URL}/chat
-//    body    : { message, userName, tourContext | null }
+//    body    : { prompt, userName, tourContext | null, history }
 //    response: { reply: string, suggestedTours: [{ _id, title, price, image }] }
 //
 //  Hành vi:
@@ -108,7 +108,7 @@ async function stubTraLoi({ message, userName, tourContext }) {
 }
 
 // ── Cổng duy nhất controller gọi ─────────────────────────────
-export async function sinhTraLoi({ message, userName, tourContext }) {
+export async function sinhTraLoi({ message, userName, tourContext, history = [] }) {
   const url = (process.env.AI_SERVICE_URL || '').trim()
 
   // Chưa cấu hình AI → stub nội bộ
@@ -122,8 +122,11 @@ export async function sinhTraLoi({ message, userName, tourContext }) {
     const henGio = setTimeout(() => controller.abort(), TIMEOUT_MS)
     const res = await fetch(`${url.replace(/\/$/, '')}/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: message, userName, tourContext }),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-api-key': String(process.env.AI_SERVICE_API_KEY || ''),
+      },
+      body: JSON.stringify({ prompt: message, userName, tourContext, history }),
       signal: controller.signal,
     })
     clearTimeout(henGio)
@@ -132,10 +135,19 @@ export async function sinhTraLoi({ message, userName, tourContext }) {
 
     // Ép về đúng shape cố định — không tin shape ngoài
     const returnedTours = data.tours || data.suggestedTours || []
+    const suggested = Array.isArray(returnedTours)
+      ? returnedTours.filter((tour) => {
+          if (tourContext?._id && String(tour._id) === String(tourContext._id)) return false
+          if (!Array.isArray(tour.departures)) return true
+          return tour.departures.some(
+            (departure) => new Date(departure.date) > new Date() && Number(departure.availableSlots) > 0
+          )
+        })
+      : []
     return {
       reply: String(data.reply || ''),
-      suggestedTours: Array.isArray(returnedTours)
-        ? returnedTours.slice(0, 4).map((t) => ({
+      suggestedTours: suggested.length
+        ? suggested.slice(0, 4).map((t) => ({
             _id: t._id,
             title: String(t.title || t.name || ''),
             price: Number(t.price || t.basePrice) || 0,

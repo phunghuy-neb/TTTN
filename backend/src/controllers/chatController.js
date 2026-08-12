@@ -50,12 +50,19 @@ export const postChat = async (req, res) => {
       }
     }
 
+    const history = await ChatMessage.find({ userId: req.user._id })
+      .sort({ at: -1 })
+      .limit(12)
+      .select('role content')
+      .lean()
+
     let ketQua
     try {
       ketQua = await sinhTraLoi({
         message: message.trim(),
         userName: req.user.name,
         tourContext,
+        history: history.reverse(),
       })
     } catch (err) {
       if (err instanceof AiUnavailableError) {

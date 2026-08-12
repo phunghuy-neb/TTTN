@@ -21,10 +21,10 @@ const ItineraryDaySchema = new Schema(
 const DepartureSchema = new Schema(
   {
     date: { type: Date, required: true },
+    totalSlots: { type: Number, required: true, min: 0 },
     availableSlots: { type: Number, required: true, min: 0 },
     price: { type: Number, required: true },
-  },
-  { _id: false }
+  }
 );
 
 const ReviewSchema = new Schema(
@@ -59,6 +59,8 @@ const TourSchema = new Schema(
     },
     summary: { type: String, default: "" },
     description: { type: String, default: "" }, // nguồn chính để sinh embedding
+    inclusions: { type: String, default: "" },
+    exclusions: { type: String, default: "" },
     days: { type: Number, required: true },
     basePrice: { type: Number, required: true },
     oldPrice: { type: Number, default: null },
@@ -74,6 +76,7 @@ const TourSchema = new Schema(
       enum: ["draft", "published", "archived"],
       default: "draft",
     },
+    isActive: { type: Boolean, default: true },
     vectorSync: { type: VectorSyncSchema, default: () => ({}) },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },

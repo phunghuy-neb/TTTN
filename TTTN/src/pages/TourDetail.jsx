@@ -9,6 +9,8 @@ import Skeleton from '../components/ui/Skeleton.jsx'
 import TourCard from '../components/TourCard.jsx'
 import { useRequestGuard } from '../hooks/useRequestGuard.js'
 import { emitOpenChat } from '../components/chat/chatEvents.js'
+import { useFavorites } from '../context/FavoritesContext.jsx'
+import { useToast } from '../components/ui/Toast.jsx'
 
 // Khung xương lúc đang tải
 function DetailSkeleton() {
@@ -45,6 +47,8 @@ export default function TourDetail() {
   const navigate = useNavigate()
   const location = useLocation()
   const { user } = useAuth()
+  const { favoriteIds, toggleFavorite } = useFavorites()
+  const toast = useToast()
   const [tour, setTour] = useState(null)
   const [relatedTours, setRelatedTours] = useState([])
   const [recentTours, setRecentTours] = useState([])
@@ -60,6 +64,7 @@ export default function TourDetail() {
   const [soKhachText, setSoKhachText] = useState('1')
   const [selectedMonthTab, setSelectedMonthTab] = useState('all')
   const [limitDepartures, setLimitDepartures] = useState(5) // Hiển thị ban đầu 5 đợt
+  const [savingFavorite, setSavingFavorite] = useState(false)
 
   // Chống race condition khi đổi slug nhanh — xem hooks/useRequestGuard.js
   const beginRequest = useRequestGuard()
@@ -83,7 +88,11 @@ export default function TourDetail() {
       // Đổi tour → tự động chọn đợt khởi hành đầu tiên còn chỗ
       const availableDep = res.data.departures?.find(d => d.availableSlots > 0)
       setDotChonId(availableDep ? availableDep._id : '')
-      setSoKhachText('1')
+      const rebookGuests = Number(location.state?.rebookGuests)
+      const defaultGuests = availableDep && Number.isInteger(rebookGuests) && rebookGuests > 0
+        ? Math.min(rebookGuests, availableDep.availableSlots)
+        : 1
+      setSoKhachText(String(defaultGuests))
 
       // Lấy tour liên quan
       try {
@@ -172,6 +181,22 @@ export default function TourDetail() {
     })
   }
 
+  async function toggleTourFavorite() {
+    if (!user) {
+      navigate('/login', { state: { from: location } })
+      return
+    }
+    if (!tour || savingFavorite) return
+    setSavingFavorite(true)
+    const res = await toggleFavorite(tour._id)
+    setSavingFavorite(false)
+    if (!res.success) {
+      toast(res.message || 'Không cập nhật được tour yêu thích.', 'error')
+      return
+    }
+    toast(res.message)
+  }
+
   // Logic hiển thị lịch khởi hành đa dạng dạng tab
   const availableMonths = []
   if (tour?.departures?.length > 0) {
@@ -204,8 +229,19 @@ export default function TourDetail() {
     return days[d.getDay()]
   }
 
+  const sortedReviews = [...(tour?.reviews || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+  const ratingText = (tour?.avgRating || 0) >= 4.5
+    ? 'Xuất sắc'
+    : (tour?.avgRating || 0) >= 4
+      ? 'Rất tốt'
+      : (tour?.avgRating || 0) >= 3
+        ? 'Tốt'
+        : (tour?.avgRating || 0) >= 2
+          ? 'Trung bình'
+          : 'Cần cải thiện'
+
   // Gom tất cả ảnh từ các đánh giá
-  const allReviewImages = tour?.reviews?.reduce((acc, rv) => {
+  const allReviewImages = sortedReviews.reduce((acc, rv) => {
     if (rv.images && rv.images.length > 0) {
       acc.push(...rv.images)
     }
@@ -284,19 +320,36 @@ export default function TourDetail() {
 
           {/* (c) Tiêu đề + thông tin nhanh */}
           <p className="eyebrow mt-7">{tour.region}</p>
-          <h1 className="mt-2 font-heading text-[30px] font-semibold text-ink">{tour.name}</h1>
+          <div className="mt-2 flex items-start justify-between gap-4">
+            <h1 className="font-heading text-[30px] font-semibold text-ink">{tour.name}</h1>
+            <button
+              type="button"
+              disabled={savingFavorite}
+              aria-pressed={favoriteIds.has(String(tour._id))}
+              onClick={toggleTourFavorite}
+              className={`flex shrink-0 items-center gap-2 rounded-pill border px-4 py-2 text-[14px] font-semibold transition disabled:opacity-60 ${favoriteIds.has(String(tour._id)) ? 'border-coral/40 bg-coral/5 text-coralD' : 'border-line text-teal hover:border-teal'}`}
+            >
+              <span className="text-[20px]">{favoriteIds.has(String(tour._id)) ? '♥' : '♡'}</span>
+              <span className="hidden sm:inline">{favoriteIds.has(String(tour._id)) ? 'Đã yêu thích' : 'Yêu thích'}</span>
+            </button>
+          </div>
           <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-[14.5px] text-muted">
             <span>📍 {tour.location}</span>
             <span>{tour.days} ngày</span>
             <span className="flex items-center gap-1">
               <span className="text-gold">★</span>
-              <span className="font-semibold text-ink">{tour.avgRating.toFixed(1)}</span>
+              <span className="font-semibold text-ink">{(tour.avgRating || 0).toFixed(1)}</span>
               <span>({tour.reviews?.length ?? 0} đánh giá)</span>
             </span>
           </div>
 
           {/* (d) Hộp đặt tour (UC-08) — chọn đợt khởi hành, nhập số khách, tổng tiền tự cập nhật */}
           <div className="card-surface mt-6 p-5">
+            {tour.promotionLabel && (
+              <div className="mb-4 rounded-xl border border-coral/25 bg-coral/10 px-4 py-3 text-[14px] font-semibold text-coralD">
+                🎂 {tour.promotionLabel} — ưu đãi đã được áp dụng trực tiếp vào giá tour.
+              </div>
+            )}
             <div className="flex flex-wrap items-baseline justify-between gap-3">
               <div className="flex items-baseline gap-3">
                 <span className="font-heading text-[26px] font-semibold text-coralD">
@@ -669,19 +722,19 @@ export default function TourDetail() {
           </section>
 
           {/* (i) Đánh giá khách hàng — chỉ hiển thị, form đánh giá thuộc Tuần 4–5 (UC-11) */}
-          <section className="mt-12 bg-white p-6 rounded-card border-[1.5px] border-line">
+          <section id="reviews" className="mt-12 scroll-mt-[92px] bg-white p-6 rounded-card border-[1.5px] border-line">
             <h2 className="font-heading text-[22px] font-semibold text-ink">Đánh giá của khách hàng</h2>
-            <p className="mt-1 text-[14.5px] text-muted mb-6">Trải nghiệm thực tế từ khách đã đi tour cùng iVIVU.</p>
+            <p className="mt-1 text-[14.5px] text-muted mb-6">Trải nghiệm thực tế từ khách đã hoàn thành tour cùng VietVoyage.</p>
             
             {tour.reviews?.length > 0 ? (
               <>
                 {/* Điểm số */}
                 <div className="flex items-center gap-3 mb-6">
                   <div className="bg-[#5cb85c] text-white px-3 py-1.5 rounded-[8px] font-bold text-[18px]">
-                    {(tour.avgRating || 0).toFixed(1)} /10
+                    {(tour.avgRating || 0).toFixed(1)} /5
                   </div>
                   <div className="text-[15px]">
-                    <span className="font-semibold text-[#5cb85c]">Rất tốt</span> <span className="text-muted">| {tour.reviews.length} đánh giá</span>
+                    <span className="font-semibold text-[#5cb85c]">{ratingText}</span> <span className="text-muted">| {tour.reviews.length} đánh giá</span>
                   </div>
                 </div>
 
@@ -702,7 +755,7 @@ export default function TourDetail() {
                 <h3 className="font-heading text-[17px] font-semibold text-ink border-b-[1.5px] border-line pb-3 mb-4">Đánh giá gần đây</h3>
                 
                 <div className="flex flex-col gap-6">
-                  {tour.reviews.map((rv, i) => {
+                  {sortedReviews.map((rv, i) => {
                     const tenKhach = (tenNguoiDanhGia(rv.user) || 'Khách hàng').trim();
                     const words = tenKhach.split(' ').filter(w => w.length > 0);
                     const avatar = words.length > 1 
@@ -710,7 +763,7 @@ export default function TourDetail() {
                       : tenKhach.substring(0, 2).toUpperCase();
                       
                     return (
-                      <article key={i} className="pb-6 border-b border-line last:border-0 last:pb-0">
+                      <article key={rv._id || i} className="pb-6 border-b border-line last:border-0 last:pb-0">
                         <div className="flex gap-3 mb-3">
                           <div className="w-[42px] h-[42px] rounded-full bg-[#5bc0de] text-white flex items-center justify-center font-bold text-[16px] flex-shrink-0">
                             {avatar}
@@ -719,6 +772,9 @@ export default function TourDetail() {
                             <div className="font-semibold text-ink text-[16px]">{tenKhach}</div>
                             <div className="text-[13.5px] text-muted">{formatDate(rv.createdAt)}</div>
                           </div>
+                        </div>
+                        <div className="mb-2 text-gold" aria-label={`${rv.rating} trên 5 sao`}>
+                          {'★'.repeat(rv.rating || 0)}<span className="text-line">{'★'.repeat(5 - (rv.rating || 0))}</span>
                         </div>
                         <p className="text-[14.5px] leading-[1.6] text-ink mb-3">{rv.comment}</p>
                         

@@ -22,8 +22,8 @@ export async function register({ name, email, password }) {
 }
 
 /**
- * Lấy thông tin user đang đăng nhập (kèm role) từ token hiện tại.
- * Token hỏng/hết hạn → api.js tự xóa phiên và phát sự kiện session-expired.
+ * Lấy thông tin user đang đăng nhập (kèm role) từ cookie HttpOnly.
+ * Cookie hỏng/hết hạn → api.js tự xóa cache và phát session-expired.
  * @returns {Promise<{ success: boolean, message?: string, user?: object }>}
  */
 export async function getMe() {
@@ -44,4 +44,8 @@ export async function updateProfile(payload) {
  */
 export async function changePassword(payload) {
   return request('/auth/password', { method: 'PATCH', body: payload, auth: true })
+}
+
+export async function logout() {
+  return request('/auth/logout', { method: 'POST' })
 }

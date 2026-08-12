@@ -18,8 +18,8 @@ const { getTourCollection } = require("../config/chroma");
  */
 async function syncTourVectors({ force = false } = {}) {
   const query = force
-    ? { status: "published" }
-    : { status: "published", "vectorSync.isSynced": { $ne: true } };
+    ? { status: "published", isActive: { $ne: false } }
+    : { status: "published", isActive: { $ne: false }, "vectorSync.isSynced": { $ne: true } };
 
   const tours = await Tour.find(query).lean();
   const collection = await getTourCollection();

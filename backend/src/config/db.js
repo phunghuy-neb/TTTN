@@ -11,6 +11,10 @@ import mongoose from 'mongoose'
 const connectDB = async () => {
   try {
     const conn = await mongoose.connect(process.env.MONGO_URI)
+    const hello = await conn.connection.db.admin().command({ hello: 1 })
+    if (!hello.setName) {
+      throw new Error('MongoDB phải chạy replica set để transaction booking/slot an toàn. Xem README mục MongoDB replica set.')
+    }
     console.log(`✅ MongoDB kết nối thành công: ${conn.connection.host}`)
   } catch (error) {
     console.error(`❌ MongoDB lỗi kết nối: ${error.message}`)

@@ -84,6 +84,17 @@ function PieTooltip({ active, payload }) {
   )
 }
 
+function ChartEmpty({ id, children }) {
+  return (
+    <div
+      data-chart-empty={id}
+      className="grid h-full place-items-center rounded-[11px] border border-dashed border-line bg-sand/40 px-5 text-center text-[13.5px] text-muted"
+    >
+      {children}
+    </div>
+  )
+}
+
 function khung6Thang(monthlyRevenue) {
   const banDo = new Map((monthlyRevenue || []).map((t) => [`${t.year}-${t.month}`, t]))
   const out = []
@@ -141,6 +152,9 @@ export default function Dashboard() {
   const duLieuMien = stats
     ? REGIONS.map((r) => stats.revenueByRegion?.find((m) => m.region === r) || { region: r, revenue: 0, bookings: 0 })
     : []
+  const coDoanhThuThang = duLieuThang.some((item) => item.doanhThu > 0)
+  const coDoanhThuMien = duLieuMien.some((item) => item.revenue > 0)
+  const coDonTrangThai = duLieuTrangThai.some((item) => item.soDon > 0)
 
   // 4 thẻ số theo mockup
   const theSo = stats
@@ -159,6 +173,15 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {Array.from({ length: 4 }).map((_, i) => (
               <Skeleton key={i} className="h-[110px] rounded-card" />
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {['Thanh toán thành công', 'Thanh toán thất bại', 'Booking bị hủy'].map((label) => (
+              <div key={label} className="card-surface p-4">
+                <p className="text-[12px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+                <Skeleton className="mt-2 h-8 w-20 rounded-[8px]" />
+              </div>
             ))}
           </div>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -192,10 +215,12 @@ export default function Dashboard() {
 
           {/* Hàng 2 — bar doanh thu 6 tháng + pie tỷ lệ khu vực (mockup) */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <div className="card-surface p-5">
+            <div data-chart-card="monthly-revenue" className="card-surface p-5">
               <h2 className="font-heading text-[17px] font-semibold text-ink">Doanh thu 6 tháng gần nhất</h2>
               <div className="mt-3 h-[260px]">
-                <ResponsiveContainer width="100%" height="100%">
+                {!coDoanhThuThang ? (
+                  <ChartEmpty id="monthly-revenue">Chưa có doanh thu trong 6 tháng gần nhất.</ChartEmpty>
+                ) : <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={duLieuThang} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid vertical={false} stroke={LUOI} />
                     <XAxis dataKey="thang" tick={TRUC} axisLine={{ stroke: LUOI }} tickLine={false} />
@@ -205,14 +230,16 @@ export default function Dashboard() {
                         làm rAF đóng băng khiến cột dừng giữa chừng và hiện SAI tỉ lệ */}
                     <Bar dataKey="doanhThu" name="Doanh thu" fill={MAU_DOANH_THU} barSize={28} radius={[4, 4, 0, 0]} isAnimationActive={false} />
                   </BarChart>
-                </ResponsiveContainer>
+                </ResponsiveContainer>}
               </div>
             </div>
 
-            <div className="card-surface p-5">
+            <div data-chart-card="region-revenue" className="card-surface p-5">
               <h2 className="font-heading text-[17px] font-semibold text-ink">Tỷ lệ theo khu vực</h2>
               <div className="mt-3 h-[260px]">
-                <ResponsiveContainer width="100%" height="100%">
+                {!coDoanhThuMien ? (
+                  <ChartEmpty id="region-revenue">Chưa có doanh thu để phân bổ theo khu vực.</ChartEmpty>
+                ) : <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
                       data={duLieuMien}
@@ -240,17 +267,19 @@ export default function Dashboard() {
                       iconSize={9}
                     />
                   </PieChart>
-                </ResponsiveContainer>
+                </ResponsiveContainer>}
               </div>
             </div>
           </div>
 
           {/* Hàng 3 — đơn theo trạng thái (giữ từ trước) + Booking mới nhất kiểu mockup */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <div className="card-surface p-5">
+            <div data-chart-card="booking-status" className="card-surface p-5">
               <h2 className="font-heading text-[17px] font-semibold text-ink">Đơn theo trạng thái</h2>
               <div className="mt-3 h-[240px]">
-                <ResponsiveContainer width="100%" height="100%">
+                {!coDonTrangThai ? (
+                  <ChartEmpty id="booking-status">Chưa có đơn đặt tour để thống kê.</ChartEmpty>
+                ) : <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={duLieuTrangThai} layout="vertical" margin={{ top: 8, right: 34, left: 8, bottom: 0 }}>
                     <CartesianGrid horizontal={false} stroke={LUOI} />
                     <XAxis type="number" tick={TRUC} allowDecimals={false} axisLine={{ stroke: LUOI }} tickLine={false} />
@@ -263,7 +292,7 @@ export default function Dashboard() {
                       <LabelList dataKey="soDon" position="right" fill="#152623" fontSize={13} />
                     </Bar>
                   </BarChart>
-                </ResponsiveContainer>
+                </ResponsiveContainer>}
               </div>
             </div>
 

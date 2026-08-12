@@ -10,9 +10,19 @@ import Button from '../ui/Button.jsx'
 // Hàm format markdown đơn giản cho phản hồi của AI
 function formatMarkdown(text) {
   if (!text) return { __html: '' }
-  
+
+  // Nội dung đến từ AI và được lưu trong DB: escape HTML trước khi thêm đúng
+  // hai định dạng cho phép. Nếu làm ngược lại, prompt injection có thể tạo
+  // <img onerror=...> và lấy JWT trong localStorage (stored XSS).
+  const escaped = String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+
   // Replace **bold** with <strong>bold</strong>
-  let html = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+  let html = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
   
   // Convert bullet points (* text or - text at the start of a line) to a nice dot
   html = html.replace(/^[*-]\s/gm, '• ')

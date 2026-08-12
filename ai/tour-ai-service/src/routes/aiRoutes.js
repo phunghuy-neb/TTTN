@@ -12,12 +12,12 @@ const router = express.Router();
  */
 router.post("/context", async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, tourContext = null, history = [], userName = '' } = req.body;
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
     }
 
-    const { intent, tours, contextText, matchedChunks } = await getRagContext(prompt);
+    const { intent, tours, contextText, matchedChunks } = await getRagContext(prompt, tourContext);
     res.json({ intent, tours, contextText, matchedChunks });
   } catch (err) {
     console.error("[POST /api/ai/context]", err);
@@ -32,12 +32,12 @@ router.post("/context", async (req, res) => {
  */
 router.post("/chat", async (req, res) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, tourContext = null, history = [], userName = '' } = req.body;
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
     }
 
-    const { reply, intent, tours } = await generateChatAnswer(prompt);
+    const { reply, intent, tours } = await generateChatAnswer(prompt, tourContext, history, userName);
     res.json({ reply, intent, tours });
   } catch (err) {
     console.error("[POST /api/ai/chat]", err);
@@ -52,7 +52,7 @@ router.post("/chat", async (req, res) => {
  * intent + tours để Frontend hiển thị card gợi ý tour bên cạnh câu trả lời.
  */
 router.post("/chat/stream", async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, tourContext = null } = req.body;
   if (!prompt || typeof prompt !== "string") {
     return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
   }
@@ -71,7 +71,7 @@ router.post("/chat/stream", async (req, res) => {
   try {
     const { intent, tours, fullReply } = await streamChatAnswer(prompt, (chunkText) => {
       send("chunk", { text: chunkText });
-    });
+    }, tourContext);
     send("done", { intent, tours, fullReply });
   } catch (err) {
     console.error("[POST /api/ai/chat/stream]", err);

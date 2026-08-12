@@ -5,8 +5,33 @@ import { emitSessionExpired } from './authEvents.js'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL
 
-// Key lưu phiên trong localStorage — trùng với AuthContext
-const STORAGE_KEY = 'auth'
+export async function downloadFile(path, fallbackName = 'download') {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, { credentials: 'include' })
+    if (res.status === 401) {
+      localStorage.removeItem('auth')
+      emitSessionExpired()
+    }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      return { success: false, message: data.message || 'Không tải được tệp.', status: res.status }
+    }
+    const blob = await res.blob()
+    const disposition = res.headers.get('content-disposition') || ''
+    const match = disposition.match(/filename="?([^";]+)"?/i)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = match?.[1] || fallbackName
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    return { success: true }
+  } catch {
+    return { success: false, message: 'Không thể kết nối máy chủ.' }
+  }
+}
 
 /**
  * Gọi API tới backend. Hỗ trợ mọi method (GET/POST/PUT/PATCH/DELETE) và body FormData.
@@ -22,21 +47,11 @@ export async function request(path, { method = 'GET', body, auth = false } = {})
   const isFormData = typeof FormData !== 'undefined' && body instanceof FormData
   if (body && !isFormData) headers['Content-Type'] = 'application/json'
 
-  // Gắn token nếu route cần xác thực
-  if (auth) {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      const saved = raw ? JSON.parse(raw) : null
-      if (saved?.token) headers.Authorization = `Bearer ${saved.token}`
-    } catch {
-      // Dữ liệu localStorage hỏng — bỏ qua, gọi như chưa đăng nhập
-    }
-  }
-
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
       method,
       headers,
+      credentials: 'include',
       body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
     })
 
@@ -47,7 +62,7 @@ export async function request(path, { method = 'GET', body, auth = false } = {})
     // reset user ngay lập tức (không đợi F5). 401 của /auth/login (auth: false, sai
     // mật khẩu) không đi vào nhánh này nên không ảnh hưởng form đăng nhập.
     if (res.status === 401 && auth) {
-      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem('auth')
       emitSessionExpired()
     }
 
@@ -60,7 +75,7 @@ export async function request(path, { method = 'GET', body, auth = false } = {})
       }
     }
 
-    // BE đã trả sẵn { success, message, token, user } — trả nguyên vẹn
+    // Trả nguyên response; AuthContext chỉ lưu user, không lưu token.
     return data
   } catch {
     // fetch ném lỗi — mất mạng hoặc server tắt

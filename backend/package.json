@@ -7,19 +7,30 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
+    "test": "node --test test/*.test.js",
+    "test:voucher-concurrency": "node scripts/test-voucher-concurrency.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs",
+    "seed:birthday-5k": "node scripts/create-birthday-5k-tours.mjs",
     "scrape": "node scraper/ivivuScraper.js",
     "scrape:ivivu": "node scraper/ivivuScraper.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
+    "dejavu-fonts-ttf": "^2.37.3",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.5.0",
     "multer": "^2.2.0",
+    "pdfkit": "^0.19.1",
     "puppeteer": "^25.5.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "qrcode": "^1.5.4"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }

@@ -30,11 +30,14 @@ const DepartureSchema = new mongoose.Schema({
 const ReviewSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    booking: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: null },
     rating: { type: Number, required: true, min: 1, max: 5 },
     comment: { type: String, trim: true, default: '' },
+    images: [{ type: String }],
+    isVisible: { type: Boolean, default: true },
     createdAt: { type: Date, default: Date.now },
   },
-  { _id: false }
+  { _id: true }
 )
 
 // ── Sub-schema: Trạng thái đồng bộ sang ChromaDB ─────────────
@@ -114,6 +117,15 @@ const TourSchema = new mongoose.Schema(
     oldPrice: {
       type: Number,
       default: null,
+    },
+
+    // Nhãn chiến dịch công khai, ví dụ "Sinh nhật VietVoyage - 5K/khách".
+    // Giá khuyến mãi vẫn nằm ở basePrice/departures để mọi phép tính booking
+    // và cổng thanh toán đều dùng đúng số tiền phía backend.
+    promotionLabel: {
+      type: String,
+      trim: true,
+      default: '',
     },
 
     // Các đợt khởi hành (ngày, số chỗ, giá riêng theo mùa)

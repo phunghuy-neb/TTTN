@@ -57,6 +57,8 @@ function buildContextText(tours) {
   return tours
     .map((t, i) => {
       const departuresText = (t.departures || [])
+        .filter((d) => new Date(d.date) > new Date() && d.availableSlots > 0)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
         .slice(0, 3)
         .map(
           (d) =>
@@ -68,8 +70,17 @@ function buildContextText(tours) {
         `[Tour ${i + 1}] ${t.name} - ${t.location}, ${t.region}`,
         `Số ngày: ${t.days} | Giá cơ bản: ${t.basePrice.toLocaleString("vi-VN")}đ`,
         t.summary ? `Tóm tắt: ${t.summary}` : null,
+        t.description ? `Mô tả: ${t.description}` : null,
         departuresText ? `Các đợt khởi hành gần nhất: ${departuresText}` : null,
+        Array.isArray(t.itinerary) && t.itinerary.length
+          ? `Lịch trình: ${t.itinerary.slice(0, 8).map((d) => `Ngày ${d.dayNumber}: ${d.title}${d.description ? ` — ${d.description}` : ""}${d.meals?.length ? ` (bữa: ${d.meals.join(", ")})` : ""}`).join("; ")}`
+          : null,
+        t.inclusions ? `Bao gồm: ${t.inclusions}` : null,
+        t.exclusions ? `Không bao gồm: ${t.exclusions}` : null,
         t.cancellationPolicy ? `Chính sách hủy: ${t.cancellationPolicy}` : null,
+        Array.isArray(t.reviews) && t.reviews.length
+          ? `Đánh giá gần đây: ${t.reviews.slice(-3).map((r) => `${r.rating}/5 — ${r.comment || ""}`).join("; ")}`
+          : null,
       ]
         .filter(Boolean)
         .join("\n");
@@ -82,7 +93,7 @@ function buildContextText(tours) {
  * @param {string} prompt
  * @returns {Promise<{intent: object, tours: Array, contextText: string, matchedChunks: Array}>}
  */
-async function getRagContext(prompt) {
+async function getRagContext(prompt, tourContext = null) {
   // Bước 1: trích xuất ý định
   const intent = await extractIntent(prompt);
 
@@ -101,18 +112,28 @@ async function getRagContext(prompt) {
 
   // Bước 4: gom nhóm theo tourId, loại trùng, giữ thứ tự liên quan
   const orderedTourIds = dedupeTourIdsInOrder(chromaResult);
+  const contextId = tourContext?._id && /^[0-9a-fA-F]{24}$/.test(String(tourContext._id))
+    ? String(tourContext._id)
+    : null;
+  if (contextId) {
+    const index = orderedTourIds.indexOf(contextId);
+    if (index >= 0) orderedTourIds.splice(index, 1);
+    orderedTourIds.unshift(contextId);
+  }
 
   // Bước 5: lấy dữ liệu đầy đủ, chính xác từ MongoDB (không lấy giá từ vector)
   const toursFromDb = await Tour.find({
     _id: { $in: orderedTourIds },
     status: "published",
+    isActive: { $ne: false },
   }).lean();
 
   // Giữ đúng thứ tự liên quan trả về từ ChromaDB
   const toursById = new Map(toursFromDb.map((t) => [String(t._id), t]));
   const tours = orderedTourIds
     .map((id) => toursById.get(id))
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((tour) => String(tour._id) === contextId || (tour.departures || []).some((d) => new Date(d.date) > new Date() && d.availableSlots > 0));
 
   // Bước 6: ghép contextText
   const contextText = tours.length

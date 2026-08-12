@@ -25,6 +25,20 @@ export const protect = async (req, res, next) => {
     token = req.headers.authorization.split(' ')[1]
   }
 
+  // Trình duyệt dùng cookie HttpOnly để JavaScript/XSS không đọc được JWT.
+  // Vẫn giữ Bearer cho script/CLI và tích hợp server-to-server.
+  if (!token && req.headers.cookie) {
+    const cookies = Object.fromEntries(
+      req.headers.cookie.split(';').map((part) => {
+        const index = part.indexOf('=')
+        return index < 0
+          ? [part.trim(), '']
+          : [part.slice(0, index).trim(), part.slice(index + 1).trim()]
+      })
+    )
+    token = cookies.vv_session
+  }
+
   if (!token) {
     return res.status(401).json({
       success: false,

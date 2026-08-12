@@ -1,0 +1,98 @@
+name: vietvoyage
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      PORT: 5000
+      TRUST_PROXY: "true"
+      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      # Để trống mặc định: Backend dùng trợ lý stub. Bật profile ai và đặt URL
+      # này trong .env gốc nếu muốn chạy Gemini/Chroma cùng compose.
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-}
+      AI_SERVICE_API_KEY: ${AI_SERVICE_API_KEY:-}
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./backend/uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./TTTN
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:alpine
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        test -n "$$NGROK_AUTHTOKEN" || { echo "Thiếu NGROK_AUTHTOKEN trong .env gốc"; exit 1; }
+        test -n "$$NGROK_DOMAIN" || { echo "Thiếu NGROK_DOMAIN trong .env gốc"; exit 1; }
+        printf '%s\n' 'version: "3"' 'agent:' '  web_addr: 0.0.0.0:4040' > /tmp/ngrok.yml
+        exec ngrok http frontend:80 --url "https://$$NGROK_DOMAIN" --log stdout --config /tmp/ngrok.yml
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+    ports:
+      - "127.0.0.1:4040:4040"
+    depends_on:
+      frontend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tour-ai-service:
+    profiles: ["ai"]
+    build:
+      context: ./ai/tour-ai-service
+    env_file:
+      - ./ai/tour-ai-service/.env
+    environment:
+      CHROMA_URL: http://chromadb:8000
+      AI_INTERNAL_API_KEY: ${AI_SERVICE_API_KEY:-}
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      - chromadb
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  chromadb:
+    profiles: ["ai"]
+    image: chromadb/chroma:latest
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: unless-stopped
+
+volumes:
+  chroma_data:

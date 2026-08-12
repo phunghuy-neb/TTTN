@@ -4,6 +4,11 @@
 // ============================================================
 import Booking from '../models/Booking.js'
 import Tour from '../models/Tour.js'
+import PaymentAttempt from '../models/PaymentAttempt.js'
+import mongoose from 'mongoose'
+import { createNotification } from '../services/notificationService.js'
+import { ensureTicketForBooking } from '../services/ticketService.js'
+import { createVoucherUsage, releaseVoucherForBooking, reserveVoucher, useVoucherForBooking } from '../services/voucherService.js'
 
 // ── Helper: Format booking trả về client ─────────────────────
 const formatBooking = (b) => ({
@@ -13,6 +18,9 @@ const formatBooking = (b) => ({
   tour: b.tour,
   tourName: b.tourName,
   unitPrice: b.unitPrice,
+  originalPrice: b.originalPrice || b.unitPrice * b.guests,
+  discountAmount: b.discountAmount || 0,
+  voucher: b.voucher || null,
   departureId: b.departureId,
   departureDate: b.departureDate,
   guests: b.guests,
@@ -22,6 +30,7 @@ const formatBooking = (b) => ({
   paymentMethod: b.paymentMethod,
   txnRef: b.txnRef,
   paidAt: b.paidAt,
+  paymentExpiresAt: b.paymentExpiresAt,
   reviewed: b.reviewed,
   note: b.note,
   statusHistory: b.statusHistory || [],
@@ -29,25 +38,60 @@ const formatBooking = (b) => ({
   updatedAt: b.updatedAt,
 })
 
-// Cửa sổ chống đơn trùng: hai yêu cầu đặt giống hệt nhau trong khoảng này được coi
-// là MỘT lần đặt bị gửi lặp (double-click, mạng chậm rồi bấm lại, F5 gửi lại form).
-const CUA_SO_TRUNG_MS = 10_000
+const formatPaymentAttempt = (attempt) => attempt ? ({
+  _id: attempt._id,
+  provider: attempt.provider,
+  status: attempt.status,
+  amount: attempt.amount,
+  responseCode: attempt.responseCode || '',
+  processedAt: attempt.processedAt,
+  expiresAt: attempt.expiresAt,
+  createdAt: attempt.createdAt,
+  updatedAt: attempt.updatedAt,
+}) : null
+
+async function getPaymentMetadata(bookingIds) {
+  if (!bookingIds.length) return { latestByBooking: new Map(), reviewSet: new Set() }
+  const attempts = await PaymentAttempt.find({ booking: { $in: bookingIds } })
+    .sort({ createdAt: -1 })
+    .select('booking provider status amount responseCode processedAt expiresAt createdAt updatedAt')
+    .lean()
+  const latestByBooking = new Map()
+  const reviewSet = new Set()
+  for (const attempt of attempts) {
+    const bookingId = String(attempt.booking)
+    if (!latestByBooking.has(bookingId)) latestByBooking.set(bookingId, formatPaymentAttempt(attempt))
+    if (attempt.status === 'review_required') reviewSet.add(bookingId)
+  }
+  return { latestByBooking, reviewSet }
+}
 
 // Trạng thái đơn còn giữ chỗ — dùng cho cả kiểm trùng lẫn thống kê
 const TRANG_THAI_GIU_CHO = ['pending_payment', 'paid', 'completed']
+
+const PHUONG_THUC_HOP_LE = ['vnpay', 'momo', 'later']
+
+function laySoPhutGiuCho(paymentMethod) {
+  const tenBien = paymentMethod === 'later' ? 'LATER_HOLD_MINUTES' : 'BOOKING_HOLD_MINUTES'
+  const macDinh = paymentMethod === 'later' ? 24 * 60 : 30
+  const giaTri = Number(process.env[tenBien])
+  return Number.isFinite(giaTri) && giaTri > 0 ? Math.floor(giaTri) : macDinh
+}
 
 // Máy trạng thái đơn (Batch 4) — NGHIÊM NGẶT, không cho nhảy tùy ý.
 // completed/cancelled là trạng thái cuối, không đổi được nữa.
 const CHUYEN_TRANG_THAI = {
   pending_payment: ['paid', 'cancelled'],
-  paid: ['completed', 'cancelled'],
+  // Đơn đã thu tiền không được hủy bằng một cú đổi trạng thái vì như vậy không
+  // hoàn tiền tại cổng thanh toán. Hoàn tiền cần một luồng refund/đối soát riêng.
+  paid: ['completed'],
   completed: [],
   cancelled: [],
 }
 
 // Hoàn chỗ về đúng đợt theo departureId — dùng chung cho user hủy lẫn admin hủy.
 // Đơn mồ côi (departureId null) → bỏ qua + ghi log, tuyệt đối không đoán theo ngày.
-async function hoanChoTheoDot(booking, nhan) {
+async function hoanChoTheoDot(booking, nhan, session = null) {
   if (!booking.departureId) {
     console.error(
       `[${nhan}] Đơn`,
@@ -58,10 +102,11 @@ async function hoanChoTheoDot(booking, nhan) {
   }
   const ketQua = await Tour.updateOne(
     { _id: booking.tour, 'departures._id': booking.departureId },
-    { $inc: { 'departures.$.availableSlots': booking.guests } }
+    { $inc: { 'departures.$.availableSlots': booking.guests } },
+    { session }
   )
   if (ketQua.modifiedCount === 0) {
-    console.error(`[${nhan}] Không hoàn được chỗ cho đơn`, booking.bookingCode)
+    throw new Error(`[${nhan}] Không hoàn được chỗ cho đơn ${booking.bookingCode}`)
   }
 }
 
@@ -72,22 +117,45 @@ async function hoanChoTheoDot(booking, nhan) {
 // ============================================================
 export const createBooking = async (req, res) => {
   try {
-    const { tourId, departureId, guests, contact, paymentMethod, note } = req.body
+    const { tourId, departureId, guests, contact, paymentMethod = 'later', note, idempotencyKey, voucherCode } = req.body
 
     // 1. Validate đầu vào cơ bản — đợt khởi hành định danh bằng departureId
     // (departures._id trong Tour), không còn nhận/khớp chuỗi ngày.
-    if (!tourId || !departureId || !guests || !contact) {
+    if (!tourId || !departureId || !guests || !contact || !idempotencyKey) {
       return res.status(400).json({
         success: false,
-        message: 'Vui lòng cung cấp đầy đủ: tourId, departureId, guests, contact.',
+        message: 'Vui lòng cung cấp đầy đủ: tourId, departureId, guests, contact, idempotencyKey.',
         code: 'VALIDATION_ERROR',
       })
+    }
+    if (!mongoose.isValidObjectId(tourId) || !mongoose.isValidObjectId(departureId)) {
+      return res.status(400).json({ success: false, message: 'Mã tour hoặc đợt khởi hành không hợp lệ.', code: 'VALIDATION_ERROR' })
+    }
+    if (!/^[A-Za-z0-9_-]{16,100}$/.test(String(idempotencyKey))) {
+      return res.status(400).json({ success: false, message: 'idempotencyKey không hợp lệ.', code: 'VALIDATION_ERROR' })
+    }
+    if (!PHUONG_THUC_HOP_LE.includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: 'Phương thức thanh toán không hợp lệ.', code: 'VALIDATION_ERROR' })
     }
     if (!contact.name || !contact.phone || !contact.email) {
       return res.status(400).json({
         success: false,
         message: 'Thông tin liên hệ cần có: họ tên, số điện thoại, email.',
       })
+    }
+    const contactDaChuanHoa = {
+      name: String(contact.name).trim(),
+      phone: String(contact.phone).trim(),
+      email: String(contact.email).trim().toLowerCase(),
+    }
+    if (contactDaChuanHoa.name.length > 100 || !/^0\d{9}$/.test(contactDaChuanHoa.phone) || !/^\S+@\S+\.\S+$/.test(contactDaChuanHoa.email)) {
+      return res.status(400).json({ success: false, message: 'Thông tin liên hệ không hợp lệ.', code: 'VALIDATION_ERROR' })
+    }
+    if (String(note || '').length > 1000) {
+      return res.status(400).json({ success: false, message: 'Ghi chú tối đa 1000 ký tự.', code: 'VALIDATION_ERROR' })
+    }
+    if (voucherCode && !/^[A-Za-z0-9_-]{3,30}$/.test(String(voucherCode).trim())) {
+      return res.status(400).json({ success: false, message: 'Mã voucher không hợp lệ.', code: 'VALIDATION_ERROR' })
     }
 
     const guestCount = Number(guests)
@@ -98,32 +166,10 @@ export const createBooking = async (req, res) => {
       })
     }
 
-    // 2. Kiểm tra tour tồn tại và đang published
-    const tour = await Tour.findById(tourId)
-    if (!tour || tour.status !== 'published') {
-      return res.status(404).json({
-        success: false,
-        message: 'Tour không tồn tại hoặc đã ngưng hoạt động.',
-      })
-    }
-
-    // 2b. Chống đơn trùng do double-submit (mạng chậm, bấm 2 lần, gửi lại request).
-    // Hai lớp bổ trợ nhau:
-    //   - Lớp này (kiểm trước): bắt các lần gửi lặp TUẦN TỰ, kể cả khi hai lần rơi
-    //     hai bên mốc chia ô thời gian của idemKey.
-    //   - Unique index `idemKey` lúc tạo đơn (bước 6): chốt thật cho các request bay
-    //     SONG SONG, thứ mà kiểm-rồi-ghi không bao giờ chặn được.
-    // Trùng thì trả lại CHÍNH ĐƠN ĐÓ (200), không trả lỗi: người dùng bấm hai lần
-    // không phải lỗi của họ, và báo lỗi sẽ khiến họ tưởng đặt hỏng rồi đặt lại lần nữa.
-    const idemKey = `${req.user._id}:${tour._id}:${departureId}:${Math.floor(Date.now() / CUA_SO_TRUNG_MS)}`
-
-    const donVuaTao = await Booking.findOne({
-      user: req.user._id,
-      tour: tour._id,
-      departureId,
-      status: { $in: TRANG_THAI_GIU_CHO },
-      createdAt: { $gte: new Date(Date.now() - CUA_SO_TRUNG_MS) },
-    }).sort('-createdAt')
+    // Idempotency do client tạo một lần cho mỗi ý định đặt tour và giữ nguyên khi
+    // retry. Không phụ thuộc cửa sổ thời gian và không gộp nhầm hai đơn hợp lệ.
+    const idemKey = `${req.user._id}:${idempotencyKey}`
+    const donVuaTao = await Booking.findOne({ idemKey })
 
     if (donVuaTao) {
       return res.status(200).json({
@@ -134,120 +180,101 @@ export const createBooking = async (req, res) => {
       })
     }
 
-    // 3. Tìm đợt khởi hành theo _id — khóa ổn định, sống sót khi admin đổi ngày
-    const departure = tour.departures.id(departureId)
-    if (!departure) {
-      return res.status(400).json({
-        success: false,
-        message: 'Không tìm thấy đợt khởi hành đã chọn. Vui lòng tải lại trang.',
-        code: 'DEPARTURE_NOT_FOUND',
-      })
-    }
-
-    // Không cho đặt đợt đã khởi hành
-    if (new Date(departure.date) < new Date()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Đợt khởi hành này đã qua. Vui lòng chọn đợt khác.',
-        code: 'DEPARTURE_PAST',
-      })
-    }
-
-    // 4. Tính giá tiền: unitPrice lấy từ đợt khởi hành cụ thể
-    const unitPrice = departure.price
-    const totalPrice = unitPrice * guestCount
-
-    // 5. Trừ chỗ TRƯỚC khi tạo đơn, bằng một cập nhật nguyên tử theo departureId.
-    // Điều kiện _id + $gte nằm trong CÙNG một $elemMatch nên hai request đồng thời
-    // không thể cùng trừ vào chỗ cuối — MongoDB chỉ cho một request khớp điều kiện.
-    const ketQuaTruCho = await Tour.findOneAndUpdate(
-      {
-        _id: tour._id,
-        departures: {
-          $elemMatch: { _id: departure._id, availableSlots: { $gte: guestCount } },
-        },
-      },
-      { $inc: { 'departures.$.availableSlots': -guestCount } },
-      { new: true }
-    )
-
-    if (!ketQuaTruCho) {
-      return res.status(409).json({
-        success: false,
-        message: `Đợt khởi hành không còn đủ ${guestCount} chỗ. Vui lòng giảm số khách hoặc chọn đợt khác.`,
-        code: 'SLOT_UNAVAILABLE',
-      })
-    }
-
-    // 6. Tạo đơn đặt tour (snapshot tourName, unitPrice và departureDate để hiển thị)
     let booking
-    let laDonTrung = false
+    let duplicate = false
     try {
-      // bookingCode sinh từ 7 số cuối timestamp + 4 ký tự ngẫu nhiên nên vẫn có
-      // xác suất trùng rất nhỏ — gặp lỗi trùng khóa E11000 thì thử lại tối đa 3 lần
-      for (let lanThu = 1; ; lanThu++) {
-        try {
-          booking = await Booking.create({
-            user: req.user._id,
-            tour: tour._id,
-            tourName: tour.name,
-            unitPrice,
-            departureId: departure._id,
-            departureDate: departure.date,
-            guests: guestCount,
-            totalPrice,
-            contact,
-            paymentMethod: paymentMethod || null,
-            note: note || '',
-            status: 'pending_payment',
-            idemKey,
-          })
-          break
-        } catch (err) {
-          // Trùng idemKey = một request song song đã thắng cuộc đua → KHÔNG phải lỗi:
-          // trả về chính đơn của người thắng. Đây mới là chốt chặn thật cho trường hợp
-          // nhiều request bay cùng lúc (pre-check ở bước 2b không chặn được vì cả
-          // năm request cùng đọc "chưa có đơn" trước khi ai kịp ghi).
-          if (err.code === 11000 && err.keyPattern?.idemKey) {
-            laDonTrung = true
-            booking = await Booking.findOne({ idemKey })
-            break
-          }
-          // Trùng bookingCode → sinh mã khác và thử lại
-          if (err.code === 11000 && lanThu < 3) continue
-          throw err
+      await mongoose.connection.transaction(async (session) => {
+        const daCo = await Booking.findOne({ idemKey }).session(session)
+        if (daCo) {
+          booking = daCo
+          duplicate = true
+          return
+        }
+
+        const tour = await Tour.findOne({ _id: tourId, status: 'published', isActive: { $ne: false } }).session(session)
+        if (!tour) throw Object.assign(new Error('Tour không tồn tại hoặc đã ngưng hoạt động.'), { statusCode: 404, code: 'TOUR_UNAVAILABLE' })
+
+        const departure = tour.departures.id(departureId)
+        if (!departure) throw Object.assign(new Error('Không tìm thấy đợt khởi hành đã chọn. Vui lòng tải lại trang.'), { statusCode: 400, code: 'DEPARTURE_NOT_FOUND' })
+        if (new Date(departure.date) <= new Date()) throw Object.assign(new Error('Đợt khởi hành này đã qua. Vui lòng chọn đợt khác.'), { statusCode: 400, code: 'DEPARTURE_PAST' })
+
+        const ketQuaTruCho = await Tour.updateOne(
+          {
+            _id: tour._id,
+            status: 'published',
+            isActive: { $ne: false },
+            departures: { $elemMatch: { _id: departure._id, availableSlots: { $gte: guestCount } } },
+          },
+          { $inc: { 'departures.$.availableSlots': -guestCount } },
+          { session }
+        )
+        if (ketQuaTruCho.modifiedCount !== 1) throw Object.assign(new Error(`Đợt khởi hành không còn đủ ${guestCount} chỗ. Vui lòng giảm số khách hoặc chọn đợt khác.`), { statusCode: 409, code: 'SLOT_UNAVAILABLE' })
+
+        const unitPrice = departure.price
+        const originalPrice = unitPrice * guestCount
+        const reservation = voucherCode
+          ? await reserveVoucher({ code: voucherCode, userId: req.user._id, originalPrice, session })
+          : null
+        const [donMoi] = await Booking.create([{
+          user: req.user._id,
+          tour: tour._id,
+          tourName: tour.name,
+          unitPrice,
+          departureId: departure._id,
+          departureDate: departure.date,
+          guests: guestCount,
+          originalPrice,
+          discountAmount: reservation?.discountAmount || 0,
+          voucher: reservation?.snapshot || null,
+          totalPrice: reservation?.totalPrice ?? originalPrice,
+          contact: contactDaChuanHoa,
+          paymentMethod,
+          paymentExpiresAt: new Date(Date.now() + laySoPhutGiuCho(paymentMethod) * 60_000),
+          note: String(note || '').trim(),
+          status: 'pending_payment',
+          statusHistory: [{
+            from: 'created',
+            to: 'pending_payment',
+            byUserId: req.user._id,
+            source: 'customer',
+            reason: 'Khách hàng tạo đơn đặt tour',
+            at: new Date(),
+          }],
+          idemKey,
+        }], { session })
+        await createVoucherUsage({ reservation, booking: donMoi, userId: req.user._id, session })
+        booking = donMoi
+        await createNotification({
+          user: req.user._id,
+          type: 'booking',
+          title: 'Đặt tour thành công',
+          message: `Đơn ${donMoi.bookingCode} đã được tạo và đang giữ ${guestCount} chỗ.`,
+          link: `/bookings/${donMoi._id}`,
+          uniqueKey: `booking-created:${donMoi._id}`,
+        }, session)
+      })
+    } catch (err) {
+      // Request song song cùng idempotencyKey: transaction thua bị rollback cả
+      // phần trừ chỗ, sau đó trả lại đúng đơn đã thắng.
+      if (err.code === 11000) {
+        booking = await Booking.findOne({ idemKey })
+        if (booking) {
+          return res.status(200).json({ success: true, message: `Đặt tour thành công! Mã đơn: ${booking.bookingCode}`, booking: formatBooking(booking), duplicate: true })
         }
       }
-    } catch (err) {
-      // Tạo đơn hỏng thì phải trả chỗ lại theo departureId, nếu không số chỗ bị hụt vĩnh viễn
-      await Tour.updateOne(
-        { _id: tour._id, 'departures._id': departure._id },
-        { $inc: { 'departures.$.availableSlots': guestCount } }
-      )
       throw err
     }
 
-    // Request thua cuộc đua: chỗ vừa trừ ở bước 5 phải trả lại, nếu không mỗi lần
-    // bấm trùng lại ăn mất một suất mà chẳng có đơn nào tương ứng.
-    if (laDonTrung) {
-      await Tour.updateOne(
-        { _id: tour._id, 'departures._id': departure._id },
-        { $inc: { 'departures.$.availableSlots': guestCount } }
-      )
-      return res.status(200).json({
-        success: true,
-        message: `Đặt tour thành công! Mã đơn: ${booking.bookingCode}`,
-        booking: formatBooking(booking),
-        duplicate: true,
-      })
-    }
-
-    res.status(201).json({
+    res.status(duplicate ? 200 : 201).json({
       success: true,
       message: `Đặt tour thành công! Mã đơn: ${booking.bookingCode}`,
       booking: formatBooking(booking),
+      ...(duplicate ? { duplicate: true } : {}),
     })
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message, code: error.code || 'BOOKING_ERROR' })
+    }
     if (error.name === 'ValidationError') {
       const msg = Object.values(error.errors).map((e) => e.message)[0]
       return res.status(400).json({ success: false, message: msg })
@@ -296,13 +323,18 @@ export const getMyBookings = async (req, res) => {
         .populate('tour', 'images slug location days'),
       Booking.countDocuments(filter),
     ])
+    const { latestByBooking, reviewSet } = await getPaymentMetadata(bookings.map((booking) => booking._id))
 
     res.json({
       success: true,
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
-      bookings: bookings.map(formatBooking),
+      bookings: bookings.map((booking) => ({
+        ...formatBooking(booking),
+        paymentReviewRequired: reviewSet.has(String(booking._id)),
+        lastPaymentAttempt: latestByBooking.get(String(booking._id)) || null,
+      })),
     })
   } catch (error) {
     console.error('[getMyBookings]', error)
@@ -319,7 +351,7 @@ export const getBooking = async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id)
       .populate('user', 'name email phone')
-      .populate('tour', 'name images slug location days')
+      .populate('tour', 'name images slug location days summary itinerary highlights')
 
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy đơn đặt.' })
@@ -333,10 +365,44 @@ export const getBooking = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Bạn không có quyền xem đơn này.' })
     }
 
-    res.json({ success: true, booking: formatBooking(booking) })
+    const { latestByBooking, reviewSet } = await getPaymentMetadata([booking._id])
+    res.json({
+      success: true,
+      booking: {
+        ...formatBooking(booking),
+        paymentReviewRequired: reviewSet.has(String(booking._id)),
+        lastPaymentAttempt: latestByBooking.get(String(booking._id)) || null,
+      },
+    })
   } catch (error) {
     console.error('[getBooking]', error)
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
+  }
+}
+
+// Tra cứu bằng bookingCode cho trang trở về từ cổng thanh toán. Vẫn yêu cầu JWT
+// và chỉ chủ đơn/admin được xem nên mã đơn không trở thành khóa truy cập bí mật.
+export const getBookingByCode = async (req, res) => {
+  try {
+    const booking = await Booking.findOne({ bookingCode: req.params.code })
+      .populate('user', 'name email phone')
+      .populate('tour', 'name images slug location days summary itinerary highlights')
+    if (!booking) return res.status(404).json({ success: false, message: 'Không tìm thấy đơn đặt.', code: 'NOT_FOUND' })
+    if (booking.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Bạn không có quyền xem đơn này.', code: 'FORBIDDEN' })
+    }
+    const { latestByBooking, reviewSet } = await getPaymentMetadata([booking._id])
+    res.json({
+      success: true,
+      booking: {
+        ...formatBooking(booking),
+        paymentReviewRequired: reviewSet.has(String(booking._id)),
+        lastPaymentAttempt: latestByBooking.get(String(booking._id)) || null,
+      },
+    })
+  } catch (error) {
+    console.error('[getBookingByCode]', error)
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
   }
 }
 
@@ -366,18 +432,36 @@ export const cancelBooking = async (req, res) => {
       })
     }
 
-    // Đổi trạng thái bằng cập nhật có điều kiện: chỉ request đầu tiên khớp
-    // status = pending_payment mới thành công, request thứ hai trả về null.
-    const daHuy = await Booking.findOneAndUpdate(
-      { _id: booking._id, status: 'pending_payment' },
-      {
-        $set: { status: 'cancelled' },
-        $push: {
-          statusHistory: { from: 'pending_payment', to: 'cancelled', byUserId: req.user._id, at: new Date() },
+    let daHuy
+    await mongoose.connection.transaction(async (session) => {
+      daHuy = await Booking.findOneAndUpdate(
+        { _id: booking._id, user: req.user._id, status: 'pending_payment' },
+        {
+          $set: { status: 'cancelled' },
+          $push: {
+            statusHistory: { from: 'pending_payment', to: 'cancelled', byUserId: req.user._id, source: 'customer', reason: 'Khách hàng tự hủy', at: new Date() },
+          },
         },
-      },
-      { new: true }
-    )
+        { new: true, session }
+      )
+
+      if (!daHuy) throw Object.assign(new Error('Đơn này đã được xử lý bởi một thao tác khác. Vui lòng tải lại trang.'), { code: 'BOOKING_CHANGED' })
+      await hoanChoTheoDot(daHuy, 'cancelBooking', session)
+      await releaseVoucherForBooking(daHuy._id, session)
+      await PaymentAttempt.updateMany(
+        { booking: daHuy._id, active: true },
+        { $set: { active: false, status: 'expired', processedAt: new Date(), responseCode: 'BOOKING_CANCELLED' } },
+        { session }
+      )
+      await createNotification({
+        user: req.user._id,
+        type: 'booking',
+        title: 'Đơn đặt tour đã hủy',
+        message: `Đơn ${daHuy.bookingCode} đã được hủy và chỗ đã được hoàn lại.`,
+        link: `/bookings/${daHuy._id}`,
+        uniqueKey: `booking-cancelled:${daHuy._id}`,
+      }, session)
+    })
 
     if (!daHuy) {
       return res.status(400).json({
@@ -386,16 +470,15 @@ export const cancelBooking = async (req, res) => {
       })
     }
 
-    // Hoàn lại số chỗ trống theo departureId — khóa ổn định, không phụ thuộc ngày.
-    // Chạy SAU cú flip trạng thái có điều kiện nên không thể hoàn hai lần.
-    await hoanChoTheoDot(daHuy, 'cancelBooking')
-
     res.json({
       success: true,
       message: `Đơn ${daHuy.bookingCode} đã được hủy thành công.`,
       booking: formatBooking(daHuy),
     })
   } catch (error) {
+    if (error.code === 'BOOKING_CHANGED') {
+      return res.status(409).json({ success: false, message: error.message, code: error.code })
+    }
     console.error('[cancelBooking]', error)
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
   }
@@ -462,12 +545,21 @@ export const getAllBookings = async (req, res) => {
       Booking.countDocuments(filter),
     ])
 
+    const reviewAttempts = await PaymentAttempt.find({
+      booking: { $in: bookings.map((booking) => booking._id) },
+      status: 'review_required',
+    }).distinct('booking')
+    const reviewSet = new Set(reviewAttempts.map(String))
+
     res.json({
       success: true,
       total,
       page: pageNum,
       totalPages: Math.ceil(total / limitNum),
-      bookings: bookings.map(formatBooking),
+      bookings: bookings.map((booking) => ({
+        ...formatBooking(booking),
+        paymentReviewRequired: reviewSet.has(String(booking._id)),
+      })),
     })
   } catch (error) {
     console.error('[getAllBookings]', error)
@@ -488,7 +580,8 @@ export const getAdminBooking = async (req, res) => {
     if (!booking) {
       return res.status(404).json({ success: false, message: 'Không tìm thấy đơn đặt.', code: 'NOT_FOUND' })
     }
-    res.json({ success: true, booking: formatBooking(booking) })
+    const paymentReviewRequired = await PaymentAttempt.exists({ booking: booking._id, status: 'review_required' })
+    res.json({ success: true, booking: { ...formatBooking(booking), paymentReviewRequired: !!paymentReviewRequired } })
   } catch (error) {
     console.error('[getAdminBooking]', error)
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
@@ -499,7 +592,7 @@ export const getAdminBooking = async (req, res) => {
 //  @route   PATCH /api/admin/bookings/:id/status
 //  @desc    Admin đổi trạng thái đơn theo máy trạng thái NGHIÊM NGẶT:
 //             pending_payment → paid | cancelled
-//             paid            → completed | cancelled
+//             paid            → completed
 //             completed / cancelled → trạng thái cuối, không đổi được
 //           Sai luồng → 409 INVALID_STATUS_TRANSITION.
 //           Chuyển sang cancelled → hoàn chỗ nguyên tử theo departureId.
@@ -507,7 +600,7 @@ export const getAdminBooking = async (req, res) => {
 // ============================================================
 export const updateBookingStatus = async (req, res) => {
   try {
-    const { status, txnRef, paymentMethod } = req.body
+    const { status, txnRef } = req.body
 
     if (!status || !(status in CHUYEN_TRANG_THAI)) {
       return res.status(400).json({
@@ -534,38 +627,63 @@ export const updateBookingStatus = async (req, res) => {
       })
     }
 
-    // Flip trạng thái CÓ ĐIỀU KIỆN: chỉ request khớp đúng trạng thái cũ mới thắng —
-    // hai admin bấm đồng thời thì người sau nhận 409, không có chuyện hoàn chỗ hai lần.
-    const capNhat = {
-      $set: { status },
-      $push: {
-        statusHistory: { from: booking.status, to: status, byUserId: req.user._id, at: new Date() },
-      },
-    }
-    if (status === 'paid') {
-      capNhat.$set.paidAt = new Date()
-      if (paymentMethod) capNhat.$set.paymentMethod = paymentMethod
-      if (txnRef) capNhat.$set.txnRef = txnRef
-    }
-
-    const daDoi = await Booking.findOneAndUpdate(
-      { _id: booking._id, status: booking.status },
-      capNhat,
-      { new: true }
-    )
-    if (!daDoi) {
+    if (status === 'paid' && ['vnpay', 'momo'].includes(booking.paymentMethod)) {
       return res.status(409).json({
         success: false,
-        message: 'Đơn vừa được xử lý bởi một thao tác khác. Vui lòng tải lại trang.',
-        code: 'INVALID_STATUS_TRANSITION',
+        message: 'Đơn thanh toán online chỉ được xác nhận bởi callback đã kiểm tra chữ ký từ cổng thanh toán.',
+        code: 'PAYMENT_CALLBACK_REQUIRED',
       })
     }
-
-    // Chuyển sang cancelled từ pending/paid (các trạng thái đang giữ chỗ)
-    // → hoàn chỗ nguyên tử theo departureId; đơn mồ côi chỉ ghi log.
-    if (status === 'cancelled') {
-      await hoanChoTheoDot(daDoi, 'updateBookingStatus')
+    if (txnRef !== undefined && (typeof txnRef !== 'string' || txnRef.trim().length > 100)) {
+      return res.status(400).json({ success: false, message: 'Mã giao dịch không hợp lệ.', code: 'VALIDATION_ERROR' })
     }
+
+    // Flip trạng thái CÓ ĐIỀU KIỆN: chỉ request khớp đúng trạng thái cũ mới thắng —
+    // hai admin bấm đồng thời thì người sau nhận 409, không có chuyện hoàn chỗ hai lần.
+    let daDoi
+    await mongoose.connection.transaction(async (session) => {
+      const capNhat = {
+        $set: { status },
+        $push: {
+          statusHistory: { from: booking.status, to: status, byUserId: req.user._id, source: 'admin', reason: 'Admin cập nhật trạng thái', at: new Date() },
+        },
+      }
+      if (status === 'paid') {
+        capNhat.$set.paidAt = new Date()
+        if (txnRef?.trim()) capNhat.$set.txnRef = txnRef.trim()
+      }
+
+      daDoi = await Booking.findOneAndUpdate(
+        { _id: booking._id, status: booking.status },
+        capNhat,
+        { new: true, session }
+      )
+      if (!daDoi) throw Object.assign(new Error('Đơn vừa được xử lý bởi một thao tác khác. Vui lòng tải lại trang.'), { code: 'INVALID_STATUS_TRANSITION' })
+
+      if (status === 'cancelled') {
+        await hoanChoTheoDot(daDoi, 'updateBookingStatus', session)
+        await releaseVoucherForBooking(daDoi._id, session)
+        await PaymentAttempt.updateMany(
+          { booking: daDoi._id, active: true },
+          { $set: { active: false, status: 'expired', processedAt: new Date(), responseCode: 'BOOKING_CANCELLED' } },
+          { session }
+        )
+      }
+
+      const noiDung = status === 'paid'
+        ? { type: 'payment', title: 'Đã xác nhận thanh toán', message: `Đơn ${daDoi.bookingCode} đã được xác nhận thanh toán.` }
+        : status === 'completed'
+          ? { type: 'trip', title: 'Tour đã hoàn thành', message: `Chuyến đi của đơn ${daDoi.bookingCode} đã hoàn thành. Bạn có thể gửi đánh giá ngay.` }
+          : { type: 'booking', title: 'Đơn đặt tour đã hủy', message: `Đơn ${daDoi.bookingCode} đã được quản trị viên hủy.` }
+      await createNotification({
+        user: daDoi.user,
+        ...noiDung,
+        link: `/bookings/${daDoi._id}`,
+        uniqueKey: `booking-status:${daDoi._id}:${status}`,
+      }, session)
+      if (status === 'paid') await ensureTicketForBooking(daDoi, session)
+      if (status === 'paid') await useVoucherForBooking(daDoi._id, session)
+    })
 
     res.json({
       success: true,
@@ -573,6 +691,9 @@ export const updateBookingStatus = async (req, res) => {
       booking: formatBooking(daDoi),
     })
   } catch (error) {
+    if (error.code === 'INVALID_STATUS_TRANSITION') {
+      return res.status(409).json({ success: false, message: error.message, code: error.code })
+    }
     console.error('[updateBookingStatus]', error)
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
   }
@@ -590,9 +711,9 @@ export const getBookingStats = async (req, res) => {
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ])
 
-    // Tổng doanh thu (chỉ tính đơn đã paid)
+    // Tổng doanh thu: paid và completed đều là tiền đã thu.
     const revenueResult = await Booking.aggregate([
-      { $match: { status: 'paid' } },
+      { $match: { status: { $in: ['paid', 'completed'] } } },
       { $group: { _id: null, total: { $sum: '$totalPrice' } } },
     ])
     const totalRevenue = revenueResult[0]?.total || 0
@@ -604,7 +725,7 @@ export const getBookingStats = async (req, res) => {
     sixMonthsAgo.setHours(0, 0, 0, 0)
 
     const monthlyRevenue = await Booking.aggregate([
-      { $match: { status: 'paid', createdAt: { $gte: sixMonthsAgo } } },
+      { $match: { status: { $in: ['paid', 'completed'] }, createdAt: { $gte: sixMonthsAgo } } },
       {
         $group: {
           _id: {

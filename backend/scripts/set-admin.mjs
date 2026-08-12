@@ -19,7 +19,7 @@ async function main() {
   }
 
   await mongoose.connect(process.env.MONGO_URI)
-  console.log(`Đã kết nối: ${process.env.MONGO_URI}`)
+  console.log('Đã kết nối MongoDB (URI được che khỏi log).')
 
   const user = await User.findOneAndUpdate(
     { email: email.toLowerCase().trim() },

@@ -45,8 +45,14 @@ export default function Login() {
       setErrors({ form: res.message || 'Email hoặc mật khẩu không đúng.' })
       return
     }
-    // Quay lại nơi định đến trước khi bị chặn, mặc định về trang chủ
-    navigate(location.state?.from?.pathname || '/', { replace: true })
+    const requestedPath = location.state?.from?.pathname
+    if (res.user?.role === 'admin') {
+      // Admin chỉ được đi trong khu quản trị; bỏ mọi đích client được lưu trước login.
+      navigate(requestedPath?.startsWith('/admin') ? requestedPath : '/admin', { replace: true })
+    } else {
+      // Khách không được dùng đích /admin làm đường dẫn quay lại.
+      navigate(requestedPath?.startsWith('/admin') ? '/' : (requestedPath || '/'), { replace: true })
+    }
   }
 
   return (

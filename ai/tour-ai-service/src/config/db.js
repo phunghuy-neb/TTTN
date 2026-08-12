@@ -11,7 +11,7 @@ async function connectMongo() {
   }
 
   mongoose.connection.on("connected", () => {
-    console.log("[MongoDB] Đã kết nối:", uri);
+    console.log("[MongoDB] Đã kết nối (URI được che khỏi log)");
   });
   mongoose.connection.on("error", (err) => {
     console.error("[MongoDB] Lỗi kết nối:", err.message);

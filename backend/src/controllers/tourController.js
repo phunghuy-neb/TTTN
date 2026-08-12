@@ -144,7 +144,9 @@ export const getTour = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Không tìm thấy tour.' })
     }
 
-    res.json({ success: true, tour })
+    const tourData = tour.toObject()
+    tourData.reviews = (tourData.reviews || []).filter((review) => review.isVisible !== false)
+    res.json({ success: true, tour: tourData })
   } catch (error) {
     console.error('[getTour]', error)
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })

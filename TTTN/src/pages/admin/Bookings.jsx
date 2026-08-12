@@ -146,7 +146,12 @@ export default function Bookings() {
     {
       key: 'ma',
       label: 'Mã đơn',
-      render: (b) => <span className="font-semibold text-teal">{b.bookingCode}</span>,
+      render: (b) => (
+        <span className="font-semibold text-teal">
+          {b.bookingCode}
+          {b.paymentReviewRequired && <span className="ml-1 text-coralD" title="Cần đối soát thanh toán">⚠</span>}
+        </span>
+      ),
     },
     {
       key: 'khach',
@@ -199,7 +204,11 @@ export default function Bookings() {
     },
   ]
 
-  const cacBuocTiepTheo = donChiTiet ? CHUYEN_TRANG_THAI[donChiTiet.status] || [] : []
+  const cacBuocTiepTheo = donChiTiet
+    ? (CHUYEN_TRANG_THAI[donChiTiet.status] || []).filter(
+        (buoc) => !(buoc === 'paid' && ['vnpay', 'momo'].includes(donChiTiet.paymentMethod))
+      )
+    : []
 
   return (
     <div>
@@ -329,6 +338,11 @@ export default function Bookings() {
       >
         {donChiTiet && (
           <div className="flex flex-col gap-2 text-[14px]">
+            {donChiTiet.paymentReviewRequired && (
+              <p className="rounded-[11px] border border-coral/40 bg-coral/5 px-3 py-2 font-semibold text-coralD">
+                ⚠ Giao dịch đã về sau khi đơn hết hạn/hủy hoặc có dấu hiệu thanh toán trùng. Không đổi trạng thái thủ công; cần đối soát cổng và hoàn tiền nếu cần.
+              </p>
+            )}
             {choXacNhanHuy && (
               <p className="rounded-[11px] border border-coral/40 bg-coral/5 px-3 py-2 font-semibold text-coralD">
                 Hủy đơn sẽ hoàn {donChiTiet.guests} chỗ về đợt khởi hành. Chắc chắn?
@@ -355,8 +369,20 @@ export default function Bookings() {
               </span>
             </div>
             <div className="flex justify-between gap-3">
+              <span className="text-muted">Giá gốc</span>
+              <span>{formatPrice(donChiTiet.originalPrice || donChiTiet.unitPrice * donChiTiet.guests)}</span>
+            </div>
+            {(donChiTiet.discountAmount || 0) > 0 && <div className="flex justify-between gap-3 text-jade">
+              <span>Voucher {donChiTiet.voucher?.code}</span>
+              <b>−{formatPrice(donChiTiet.discountAmount)}</b>
+            </div>}
+            <div className="flex justify-between gap-3">
               <span className="text-muted">Tổng tiền</span>
               <b className="text-coralD">{formatPrice(donChiTiet.totalPrice)}</b>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span className="text-muted">Thanh toán</span>
+              <span className="text-right text-ink">{donChiTiet.paymentMethod || '—'}{donChiTiet.txnRef ? ` · ${donChiTiet.txnRef}` : ''}</span>
             </div>
             <div className="flex justify-between gap-3">
               <span className="text-muted">Khách</span>

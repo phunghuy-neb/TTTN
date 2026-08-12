@@ -28,6 +28,7 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Vui lòng nhập mật khẩu'],
       minlength: [6, 'Mật khẩu tối thiểu 6 ký tự'],
+      maxlength: [128, 'Mật khẩu tối đa 128 ký tự'],
       select: false, // Mặc định KHÔNG trả password trong query
     },
 
@@ -41,6 +42,28 @@ const UserSchema = new mongoose.Schema(
       type: String,
       default: '', // Đường dẫn ảnh đại diện (upload sau)
     },
+
+    dateOfBirth: {
+      type: Date,
+      default: null,
+    },
+
+    gender: {
+      type: String,
+      enum: ['', 'male', 'female', 'other'],
+      default: '',
+    },
+
+    address: {
+      type: String,
+      trim: true,
+      maxlength: [250, 'Địa chỉ không được vượt quá 250 ký tự'],
+      default: '',
+    },
+
+    // Danh sách tour yêu thích của người dùng. Lưu ObjectId để đồng bộ trên mọi
+    // thiết bị; không dùng localStorage vì người dùng có thể đăng nhập máy khác.
+    favorites: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tour' }],
 
     // ── Phân quyền ──────────────────────────────────────────
     // customer: khách hàng thông thường
@@ -73,7 +96,7 @@ UserSchema.pre('save', async function (next) {
 
 // ── Method: So sánh password khi đăng nhập ────────────────────
 UserSchema.methods.matchPassword = async function (enteredPassword) {
-  return await bcrypt.compare(enteredPassword, this.password)
+  return bcrypt.compare(enteredPassword, this.password)
 }
 
 export default mongoose.model('User', UserSchema)

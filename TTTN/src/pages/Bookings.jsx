@@ -7,16 +7,10 @@ import EmptyState from '../components/ui/EmptyState.jsx'
 import Modal from '../components/ui/Modal.jsx'
 import Pagination from '../components/ui/Pagination.jsx'
 import Skeleton from '../components/ui/Skeleton.jsx'
+import BookingCountdown from '../components/BookingCountdown.jsx'
 import { useToast } from '../components/ui/Toast.jsx'
 import { useRequestGuard } from '../hooks/useRequestGuard.js'
-
-// Nhãn tiếng Việt + màu phân biệt cho từng trạng thái đơn — chỉ dùng token màu sẵn có
-const TRANG_THAI = {
-  pending_payment: { label: 'Chờ thanh toán', className: 'bg-gold/15 text-gold' },
-  paid: { label: 'Đã thanh toán', className: 'bg-jade/10 text-jade' },
-  cancelled: { label: 'Đã hủy', className: 'bg-coral/10 text-coralD' },
-  completed: { label: 'Hoàn thành', className: 'bg-teal/10 text-teal' },
-}
+import { nhanTrangThai } from '../utils/bookingStatus.js'
 
 // Bộ lọc trạng thái — giá trị rỗng nghĩa là xem tất cả
 const BO_LOC = [
@@ -26,6 +20,15 @@ const BO_LOC = [
   { value: 'cancelled', label: 'Đã hủy' },
   { value: 'completed', label: 'Hoàn thành' },
 ]
+
+const TRANG_THAI_GIAO_DICH = {
+  creating: 'Đang khởi tạo giao dịch',
+  initiated: 'Đang chờ thanh toán tại cổng',
+  paid: 'Giao dịch thành công',
+  failed: 'Lần thanh toán gần nhất chưa thành công',
+  expired: 'Giao dịch gần nhất đã hết hiệu lực',
+  review_required: 'Giao dịch cần đối soát',
+}
 
 // Trang lịch sử đặt tour (UC-10) — bộ lọc + phân trang lấy URL query string làm nguồn duy nhất
 export default function Bookings() {
@@ -39,6 +42,7 @@ export default function Bookings() {
   // Hủy đơn: đơn đang chờ người dùng xác nhận trong Modal + cờ đang gửi API
   const [donChoHuy, setDonChoHuy] = useState(null)
   const [huyDangGui, setHuyDangGui] = useState(false)
+  const [expiredIds, setExpiredIds] = useState(() => new Set())
 
   // Tăng để buộc effect tải lại theo ĐÚNG bộ lọc hiện tại trên URL — gọi thẳng load()
   // từ closure hủy đơn sẽ dùng status/page cũ nếu người dùng vừa đổi bộ lọc
@@ -193,8 +197,10 @@ export default function Bookings() {
         <>
           <div className="mt-7 flex flex-col gap-4">
             {bookings.map((b) => {
-              const tt = TRANG_THAI[b.status] || { label: b.status, className: 'bg-sand text-muted' }
+              const tt = nhanTrangThai(b.status)
               const anh = b.tour?.images?.[0] || ''
+              const daHetHan = expiredIds.has(b._id)
+              const tourUrl = b.tour?.slug ? `/tour/${b.tour.slug}` : '/tours'
               return (
                 <article key={b._id} className="card-surface overflow-hidden">
                   <div className="flex flex-col sm:flex-row">
@@ -243,16 +249,68 @@ export default function Bookings() {
                         </span>
                       </div>
 
-                      {/* Hủy đơn — chỉ với đơn chờ thanh toán, xác nhận qua Modal */}
-                      {b.status === 'pending_payment' && (
-                        <Button
-                          variant="ghost"
-                          className="mt-4 !px-4 !py-2 text-[14px] !text-coralD hover:!border-coral"
-                          onClick={() => setDonChoHuy(b)}
-                        >
-                          Hủy đơn
-                        </Button>
+                      {b.status === 'pending_payment' && b.paymentExpiresAt && (
+                        <p className="mt-3 text-[13.5px] text-muted">
+                          Giữ chỗ còn:{' '}
+                          <BookingCountdown
+                            expiresAt={b.paymentExpiresAt}
+                            compact
+                            onExpire={() => setExpiredIds((ids) => {
+                              if (ids.has(b._id)) return ids
+                              const next = new Set(ids)
+                              next.add(b._id)
+                              return next
+                            })}
+                          />
+                        </p>
                       )}
+
+                      {b.paymentReviewRequired && (
+                        <p className="mt-3 rounded-[9px] bg-gold/10 px-3 py-2 text-[13px] text-gold">
+                          Giao dịch đang chờ quản trị viên đối soát. Không thanh toán lại.
+                        </p>
+                      )}
+
+                      {b.lastPaymentAttempt && !b.paymentReviewRequired && (
+                        <p className="mt-3 text-[13px] text-muted">
+                          {TRANG_THAI_GIAO_DICH[b.lastPaymentAttempt.status] || b.lastPaymentAttempt.status} · {{ vnpay: 'VNPay', momo: 'MoMo' }[b.lastPaymentAttempt.provider] || b.lastPaymentAttempt.provider}
+                        </p>
+                      )}
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <Link to={`/bookings/${b._id}`} className="btn-ghost !px-4 !py-2 text-[14px]">
+                          Xem chi tiết
+                        </Link>
+                        {['paid', 'completed'].includes(b.status) && (
+                          <Link to={`/tickets/${b._id}`} className="btn-teal !px-4 !py-2 text-[14px]">🎫 Xem vé</Link>
+                        )}
+                        {b.status === 'pending_payment' && !daHetHan && !b.paymentReviewRequired && (
+                          <>
+                            {['vnpay', 'momo'].includes(b.paymentMethod) && (
+                              <Link to={`/payment?bookingId=${b._id}`} className="btn-teal !px-4 !py-2 text-[14px]">
+                                Tiếp tục thanh toán
+                              </Link>
+                            )}
+                          <Button
+                            variant="ghost"
+                            className="!px-4 !py-2 text-[14px] !text-coralD hover:!border-coral"
+                            onClick={() => setDonChoHuy(b)}
+                          >
+                            Hủy đơn
+                          </Button>
+                          </>
+                        )}
+                        {['cancelled', 'completed'].includes(b.status) && (
+                          <Link to={tourUrl} state={{ rebookGuests: b.guests }} className="btn-teal !px-4 !py-2 text-[14px]">
+                            Đặt lại tour
+                          </Link>
+                        )}
+                        {b.status === 'completed' && !b.reviewed && (
+                          <Link to={`/bookings/${b._id}`} state={{ openReview: true }} className="btn-coral !px-4 !py-2 text-[14px]">
+                            ★ Đánh giá
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </article>

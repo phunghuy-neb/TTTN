@@ -21,7 +21,8 @@ const storage = multer.diskStorage({
   filename: (req, file, cb) => {
     const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e6)}`
     const ext = path.extname(file.originalname)
-    cb(null, `tour-${uniqueSuffix}${ext}`)
+    const prefix = req.originalUrl.includes('/reviews') ? 'review' : 'tour'
+    cb(null, `${prefix}-${uniqueSuffix}${ext}`)
   },
 })
 

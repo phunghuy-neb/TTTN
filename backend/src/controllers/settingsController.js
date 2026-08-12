@@ -26,9 +26,12 @@ async function pingAi(url) {
   try {
     const controller = new AbortController()
     const henGio = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
-    await fetch(url, { signal: controller.signal })
+    const response = await fetch(`${url.replace(/\/$/, '')}/health`, {
+      signal: controller.signal,
+      headers: { 'x-internal-api-key': String(process.env.AI_SERVICE_API_KEY || '') },
+    })
     clearTimeout(henGio)
-    return 'online'
+    return response.ok ? 'online' : 'offline'
   } catch {
     return 'offline'
   }

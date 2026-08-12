@@ -15,7 +15,7 @@ export const nhanTrangThai = (status) =>
 // Nguồn sự thật vẫn là BE (sai luồng BE trả 409 INVALID_STATUS_TRANSITION).
 export const CHUYEN_TRANG_THAI = {
   pending_payment: ['paid', 'cancelled'],
-  paid: ['completed', 'cancelled'],
+  paid: ['completed'],
   completed: [],
   cancelled: [],
 }

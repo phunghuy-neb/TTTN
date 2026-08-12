@@ -1,4 +1,4 @@
-a import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer';
 import fs from 'fs';
 
 async function run() {

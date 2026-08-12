@@ -12,6 +12,12 @@ const NAV = [
   { to: '/admin', label: 'Tổng quan', icon: '▦', end: true },
   { to: '/admin/tours', label: 'Quản lý Tour', icon: '🗺', end: false },
   { to: '/admin/bookings', label: 'Quản lý Booking', icon: '🧾', end: false },
+  { to: '/admin/reviews', label: 'Quản lý đánh giá', icon: '★', end: false },
+  { to: '/admin/tickets', label: 'Vé & check-in', icon: '🎫', end: false },
+  { to: '/admin/vouchers', label: 'Voucher', icon: '🏷', end: false },
+  { to: '/admin/payments', label: 'Giao dịch', icon: '💳', end: false },
+  { to: '/admin/calendar', label: 'Lịch khởi hành', icon: '📅', end: false },
+  { to: '/admin/reports', label: 'Báo cáo', icon: '📊', end: false },
   { to: '/admin/users', label: 'Khách hàng', icon: '👥', end: false },
   { to: '/admin/ai-settings', label: 'Cài đặt AI', icon: '🤖', end: false },
 ]
@@ -23,6 +29,12 @@ function tieuDeTrang(pathname) {
   if (pathname === '/admin/tours/new') return 'Thêm tour'
   if (/^\/admin\/tours\/[^/]+\/edit$/.test(pathname)) return 'Sửa tour'
   if (pathname === '/admin/bookings') return 'Quản lý Booking'
+  if (pathname === '/admin/reviews') return 'Quản lý đánh giá'
+  if (pathname === '/admin/tickets') return 'Vé & check-in'
+  if (pathname === '/admin/vouchers') return 'Quản lý voucher'
+  if (pathname === '/admin/payments') return 'Giao dịch & đối soát'
+  if (pathname === '/admin/calendar') return 'Lịch khởi hành'
+  if (pathname === '/admin/reports') return 'Báo cáo & xuất dữ liệu'
   if (pathname === '/admin/users') return 'Khách hàng'
   if (pathname === '/admin/ai-settings') return 'Cài đặt AI'
   return 'Không tìm thấy'
@@ -39,10 +51,10 @@ export default function AdminLayout() {
   const [donMoi, setDonMoi] = useState(null) // null = chưa nạp
   const dangNap = useRef(false)
 
-  // Đăng xuất rồi về trang chủ khu client
+  // Đăng xuất rồi về màn hình đăng nhập; admin không đi qua giao diện khách.
   const onLogout = () => {
     logout()
-    navigate('/')
+    navigate('/login', { replace: true })
   }
 
   // Chuông: nạp 5 đơn mới nhất LẦN ĐẦU mở (dùng latestBookings sẵn có của /admin/stats)
@@ -96,14 +108,8 @@ export default function AdminLayout() {
           ))}
         </nav>
 
-        {/* Đáy sidebar: về trang khách + Đăng xuất (vị trí theo mockup) */}
+        {/* Đáy sidebar chỉ có đăng xuất — admin không có lối sang giao diện khách. */}
         <div className="mt-auto flex flex-col gap-1 border-t border-line p-3">
-          <Link
-            to="/"
-            className="flex items-center gap-2 rounded-[11px] px-3.5 py-2.5 text-[14px] font-semibold text-muted transition hover:bg-sand hover:text-teal"
-          >
-            ← Về trang khách
-          </Link>
           <button
             type="button"
             onClick={onLogout}
@@ -133,7 +139,7 @@ export default function AdminLayout() {
               🔔
             </button>
 
-            {/* Avatar chữ cái — menu Hồ sơ / Đăng xuất */}
+            {/* Avatar chữ cái — thông tin admin / Đăng xuất */}
             <button
               type="button"
               aria-label="Menu tài khoản"
@@ -183,12 +189,10 @@ export default function AdminLayout() {
             {/* Dropdown avatar */}
             {moAvatar && (
               <div className="absolute right-0 top-[46px] w-[200px] overflow-hidden rounded-card border border-line bg-white shadow-soft">
-                <p className="border-b border-line px-4 py-2.5 text-[13.5px] font-semibold text-ink">
-                  {user?.name}
-                </p>
-                <Link to="/profile" className="block px-4 py-2.5 text-[14px] text-ink transition hover:bg-sand/50">
-                  Hồ sơ
-                </Link>
+                <div className="border-b border-line px-4 py-2.5">
+                  <p className="text-[13.5px] font-semibold text-ink">{user?.name}</p>
+                  <p className="mt-0.5 truncate text-[12px] text-muted">{user?.email}</p>
+                </div>
                 <button
                   type="button"
                   onClick={onLogout}

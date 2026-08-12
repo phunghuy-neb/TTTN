@@ -14,6 +14,17 @@ const generateToken = (user) => {
   })
 }
 
+const setAuthCookie = (res, token) => {
+  const days = Math.max(1, Number(process.env.JWT_COOKIE_DAYS) || 7)
+  res.cookie('vv_session', token, {
+    httpOnly: true,
+    secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
+    sameSite: process.env.COOKIE_SAME_SITE || 'lax',
+    maxAge: days * 24 * 60 * 60 * 1000,
+    path: '/',
+  })
+}
+
 // ── Helper: Chuẩn hóa dữ liệu user trả về client ───────────
 // (Bỏ qua các field nhạy cảm như password)
 const formatUser = (user) => ({
@@ -22,6 +33,9 @@ const formatUser = (user) => ({
   email: user.email,
   phone: user.phone,
   avatar: user.avatar,
+  dateOfBirth: user.dateOfBirth,
+  gender: user.gender,
+  address: user.address,
   role: user.role,
   isActive: user.isActive,
   createdAt: user.createdAt,
@@ -37,10 +51,17 @@ export const register = async (req, res) => {
     const { name, email, password } = req.body
 
     // 1. Validate đầu vào cơ bản
-    if (!name || !email || !password) {
+    if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string' || !name.trim() || !email.trim() || !password) {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng điền đầy đủ họ tên, email và mật khẩu.',
+        code: 'VALIDATION_ERROR',
+      })
+    }
+    if (name.trim().length > 100 || !/^\S+@\S+\.\S+$/.test(email.trim()) || password.length < 6 || password.length > 128) {
+      return res.status(400).json({
+        success: false,
+        message: 'Họ tên, email hoặc mật khẩu không hợp lệ (mật khẩu từ 6–128 ký tự).',
         code: 'VALIDATION_ERROR',
       })
     }
@@ -64,6 +85,7 @@ export const register = async (req, res) => {
 
     // 4. Tạo JWT token
     const token = generateToken(user)
+    setAuthCookie(res, token)
 
     res.status(201).json({
       success: true,
@@ -100,12 +122,15 @@ export const login = async (req, res) => {
     const { email, password } = req.body
 
     // 1. Validate đầu vào
-    if (!email || !password) {
+    if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng nhập email và mật khẩu.',
         code: 'VALIDATION_ERROR',
       })
+    }
+    if (email.length > 254 || password.length > 128) {
+      return res.status(400).json({ success: false, message: 'Email hoặc mật khẩu không hợp lệ.', code: 'VALIDATION_ERROR' })
     }
 
     // 2. Tìm user theo email — phải select('+password') vì schema dùng select:false
@@ -140,6 +165,7 @@ export const login = async (req, res) => {
 
     // 5. Tạo JWT token
     const token = generateToken(user)
+    setAuthCookie(res, token)
 
     res.status(200).json({
       success: true,
@@ -170,6 +196,16 @@ export const getMe = async (req, res) => {
   })
 }
 
+export const logout = async (req, res) => {
+  res.clearCookie('vv_session', {
+    httpOnly: true,
+    secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
+    sameSite: process.env.COOKIE_SAME_SITE || 'lax',
+    path: '/',
+  })
+  res.json({ success: true, message: 'Đã đăng xuất.' })
+}
+
 // ============================================================
 //  @route   PUT /api/auth/profile
 //  @desc    Tự cập nhật họ tên / SĐT của chính mình
@@ -177,7 +213,7 @@ export const getMe = async (req, res) => {
 // ============================================================
 export const updateProfile = async (req, res) => {
   try {
-    const { name, phone } = req.body
+    const { name, phone, dateOfBirth, gender, address } = req.body
 
     if (name !== undefined && !String(name).trim()) {
       return res.status(400).json({
@@ -193,10 +229,29 @@ export const updateProfile = async (req, res) => {
         code: 'VALIDATION_ERROR',
       })
     }
+    if (gender !== undefined && !['', 'male', 'female', 'other'].includes(String(gender))) {
+      return res.status(400).json({ success: false, message: 'Giới tính không hợp lệ.', code: 'VALIDATION_ERROR' })
+    }
+    if (address !== undefined && String(address).trim().length > 250) {
+      return res.status(400).json({ success: false, message: 'Địa chỉ không được vượt quá 250 ký tự.', code: 'VALIDATION_ERROR' })
+    }
+    let parsedDateOfBirth = null
+    if (dateOfBirth) {
+      parsedDateOfBirth = new Date(`${String(dateOfBirth).slice(0, 10)}T00:00:00.000Z`)
+      const earliest = new Date('1900-01-01T00:00:00.000Z')
+      const today = new Date()
+      today.setUTCHours(23, 59, 59, 999)
+      if (Number.isNaN(parsedDateOfBirth.getTime()) || parsedDateOfBirth < earliest || parsedDateOfBirth > today) {
+        return res.status(400).json({ success: false, message: 'Ngày sinh không hợp lệ.', code: 'VALIDATION_ERROR' })
+      }
+    }
 
     const user = await User.findById(req.user._id)
     if (name !== undefined) user.name = String(name).trim()
     if (phone !== undefined) user.phone = String(phone).trim()
+    if (dateOfBirth !== undefined) user.dateOfBirth = parsedDateOfBirth
+    if (gender !== undefined) user.gender = String(gender)
+    if (address !== undefined) user.address = String(address).trim()
     await user.save()
 
     res.json({ success: true, message: 'Cập nhật hồ sơ thành công!', user: formatUser(user) })
@@ -219,17 +274,17 @@ export const changePassword = async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body
 
-    if (!oldPassword || !newPassword) {
+    if (typeof oldPassword !== 'string' || typeof newPassword !== 'string' || !oldPassword || !newPassword) {
       return res.status(400).json({
         success: false,
         message: 'Vui lòng nhập mật khẩu cũ và mật khẩu mới.',
         code: 'VALIDATION_ERROR',
       })
     }
-    if (String(newPassword).length < 6) {
+    if (newPassword.length < 6 || newPassword.length > 128 || oldPassword.length > 128) {
       return res.status(400).json({
         success: false,
-        message: 'Mật khẩu mới tối thiểu 6 ký tự.',
+        message: 'Mật khẩu mới phải từ 6–128 ký tự.',
         code: 'VALIDATION_ERROR',
       })
     }

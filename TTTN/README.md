@@ -1,6 +1,6 @@
 # VietVoyage Frontend
 
-Giao diện web đặt tour du lịch trong nước — đồ án Thực tập tốt nghiệp (Nhóm 1, PTIT). Gồm khu **khách hàng** (trang chủ, tìm/lọc tour, chi tiết, đặt & hủy tour, lịch sử, hồ sơ, chat trợ lý AI) và khu **quản trị** `/admin` (dashboard biểu đồ, quản lý tour/đơn đặt/người dùng).
+Giao diện web đặt tour du lịch trong nước — đồ án Thực tập tốt nghiệp (Nhóm 1, PTIT). Gồm khu **khách hàng** (tìm tour, yêu thích, voucher, đặt/thanh toán, lịch sử, vé QR/PDF, đánh giá, thông báo, hồ sơ, chat AI) và khu **quản trị** `/admin` (dashboard, tour/booking/user/review/voucher/vé/giao dịch, lịch khởi hành và báo cáo).
 
 ## Tech stack
 
@@ -18,7 +18,7 @@ copy .env.example .env        # chỉnh nếu Backend chạy cổng khác
 npm run dev                   # http://localhost:5173
 ```
 
-Chạy kèm Backend (`../TTTN_BE`, cổng 5000) + MongoDB. Build production: `npm run build` (ra `dist/`).
+Chạy kèm Backend (`../backend`, cổng 5000) + MongoDB replica set. Build production: `npm run build` (ra `dist/`).
 
 ## Biến môi trường (.env)
 
@@ -28,12 +28,16 @@ Chạy kèm Backend (`../TTTN_BE`, cổng 5000) + MongoDB. Build production: `np
 
 `.env` KHÔNG được commit — chỉ commit `.env.example`.
 
-## Tài khoản demo (sau khi Backend chạy seed)
+## Tài khoản quản trị
 
-| Vai trò | Email | Mật khẩu |
-|---|---|---|
-| Admin | `admin@vietvoyage.vn` | `admin123456` |
-| Khách | `tranthimai.vv@gmail.com` (và 3 tài khoản .vv@gmail.com khác) | `demo123456` |
+Dự án không lưu mật khẩu mẫu trong Git. Đăng ký một tài khoản qua giao diện, sau đó
+cấp quyền bằng lệnh sau tại thư mục `backend`:
+
+```bash
+node scripts/set-admin.mjs email-cua-ban@example.com
+```
+
+Đăng xuất và đăng nhập lại sau khi cấp quyền.
 
 ## Cấu trúc chính
 
@@ -48,7 +52,7 @@ src/
 ├── layouts/AdminLayout.jsx # Sidebar + topbar + breadcrumb khu admin
 ├── pages/                  # Trang client + pages/admin/* (Dashboard, Tours, Bookings, Users)
 ├── routes/                 # PrivateRoute, GuestRoute, AdminRoute
-├── services/               # api.js (fetch, token, lỗi tập trung) + service từng miền
+├── services/               # api.js (fetch + cookie HttpOnly + lỗi tập trung) + service từng miền
 ├── api/contract.md         # HỢP ĐỒNG API đầy đủ (endpoint, shape, mã lỗi) — đọc file này trước khi sửa service
 └── data/tours.js           # Dữ liệu tour mẫu — NGUỒN SEED của Backend (seed.mjs đọc file này), không phải dead code
 ```
@@ -57,4 +61,5 @@ src/
 
 - Mọi lỗi 4xx/5xx từ API đều có `{ message, code }` — FE map `code` sang thông báo tiếng Việt.
 - Đặt/hủy tour tham chiếu đợt khởi hành bằng `departureId` (khóa ổn định) — admin đổi ngày đợt không làm hỏng đơn cũ; chống oversell bằng cập nhật nguyên tử (xem `scripts/test-concurrent.mjs` bên Backend).
-- Chat trợ lý AI đang chạy stub của Backend; nối AI thật chỉ cần Backend set `AI_SERVICE_URL`.
+- Thanh toán VNPay chuyển sang sandbox; MoMo hỗ trợ cả sandbox thật và chế độ mô phỏng có nhãn rõ ràng cho bài nộp. Trang `/payment` đối chiếu lại trạng thái booking sau callback.
+- Chat dùng AI service khi Backend có `AI_SERVICE_URL` + `AI_SERVICE_API_KEY`; nếu không cấu hình thì Backend mới dùng stub.

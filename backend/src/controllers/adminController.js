@@ -5,6 +5,7 @@
 import Tour from '../models/Tour.js'
 import User from '../models/User.js'
 import Booking from '../models/Booking.js'
+import PaymentAttempt from '../models/PaymentAttempt.js'
 
 // Trạng thái đơn tính doanh thu — tiền đã thực thu
 const TRANG_THAI_DOANH_THU = ['paid', 'completed']
@@ -46,6 +47,7 @@ export const getAdminStats = async (req, res) => {
       pendingBookings,
       activeTours,
       theoMien,
+      paymentStatuses,
     ] = await Promise.all([
         Tour.countDocuments(),
         Booking.countDocuments(),
@@ -125,10 +127,13 @@ export const getAdminStats = async (req, res) => {
             },
           },
         ]),
+        PaymentAttempt.aggregate([{ $match: { status: { $in: ['paid', 'failed'] } } }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
       ])
 
     const byStatus = {}
     for (const s of theoTrangThai) byStatus[s._id] = s.count
+    const paymentMap = Object.fromEntries(paymentStatuses.map((item) => [item._id, item.count]))
+    const paymentFinalized = (paymentMap.paid || 0) + (paymentMap.failed || 0)
 
     // Đủ 3 miền kể cả miền doanh thu 0 — pie FE luôn đủ 3 phần
     const banDoMien = new Map(theoMien.map((m) => [m._id, m]))
@@ -171,6 +176,10 @@ export const getAdminStats = async (req, res) => {
           status: b.status,
           createdAt: b.createdAt,
         })),
+        paymentSuccessRate: paymentFinalized ? Math.round((paymentMap.paid || 0) * 1000 / paymentFinalized) / 10 : 0,
+        paymentFailureRate: paymentFinalized ? Math.round((paymentMap.failed || 0) * 1000 / paymentFinalized) / 10 : 0,
+        cancellationRate: totalBookings ? Math.round((byStatus.cancelled || 0) * 1000 / totalBookings) / 10 : 0,
+        paymentAttempts: paymentMap,
       },
     })
   } catch (error) {

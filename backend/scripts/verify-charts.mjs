@@ -18,13 +18,13 @@
 //  Tuỳ chọn qua biến môi trường:
 //    CDP_PORT   (mặc định 9222)
 //    FE_URL     (mặc định http://localhost:5173)
-//    ADMIN_EMAIL / ADMIN_PASSWORD (mặc định tài khoản demo)
+//    ADMIN_EMAIL / ADMIN_PASSWORD (bắt buộc, không lưu mật khẩu trong Git)
 // ============================================================
 
 const CDP = `http://127.0.0.1:${process.env.CDP_PORT || 9222}`
 const BASE = process.env.FE_URL || 'http://localhost:5173'
-const EMAIL = process.env.ADMIN_EMAIL || 'admin@vietvoyage.vn'
-const MAT_KHAU = process.env.ADMIN_PASSWORD || 'admin123456'
+const EMAIL = process.env.ADMIN_EMAIL
+const MAT_KHAU = process.env.ADMIN_PASSWORD
 const BE_RONG = [375, 768, 1440]
 
 // Mỗi biểu đồ: thứ tự container trên trang + selector phần tử vẽ + số phần tử tối thiểu.
@@ -32,9 +32,9 @@ const BE_RONG = [375, 768, 1440]
 // biểu đồ "có vẽ nhưng dừng giữa chừng" (animation bị đóng băng ở tab nền làm cột chỉ
 // cao 55% trong khi số liệu đáng lẽ 94% → người xem đọc sai biểu đồ).
 const BIEU_DO = [
-  { ten: 'Cột doanh thu 6 tháng', index: 0, selector: '.recharts-bar-rectangle path', toiThieu: 6, truc: 'cao', tyLeToiThieu: 0.8 },
-  { ten: 'Tròn tỷ lệ khu vực', index: 1, selector: '.recharts-pie-sector path', toiThieu: 3 },
-  { ten: 'Thanh đơn theo trạng thái', index: 2, selector: '.recharts-bar-rectangle path', toiThieu: 4, truc: 'rong', tyLeToiThieu: 0.8 },
+  { ten: 'Cột doanh thu 6 tháng', index: 0, emptyId: 'monthly-revenue', selector: '.recharts-bar-rectangle path', toiThieu: 6, truc: 'cao', tyLeToiThieu: 0.8 },
+  { ten: 'Tròn tỷ lệ khu vực', index: 1, emptyId: 'region-revenue', selector: '.recharts-pie-sector path', toiThieu: 3 },
+  { ten: 'Thanh đơn theo trạng thái', index: 2, emptyId: 'booking-status', selector: '.recharts-bar-rectangle path', toiThieu: 4, truc: 'rong', tyLeToiThieu: 0.8 },
 ]
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -70,10 +70,14 @@ async function ketNoi(url) {
 }
 
 async function main() {
+  if (!EMAIL || !MAT_KHAU) {
+    throw new Error('Thiếu ADMIN_EMAIL hoặc ADMIN_PASSWORD để kiểm thử dashboard.')
+  }
   const page = await layPage()
   const send = await ketNoi(page.webSocketDebuggerUrl)
   await send('Page.enable')
   await send('Runtime.enable')
+  await send('Network.enable')
 
   const chay = async (expression) => {
     const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
@@ -107,6 +111,7 @@ async function main() {
 
   // ── Đăng nhập admin ────────────────────────────────────────
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false })
+  await send('Network.clearBrowserCookies')
   await mo(`${BASE}/login`)
   await chay(`localStorage.removeItem('auth'); true`)
   await mo(`${BASE}/login`)
@@ -125,7 +130,7 @@ async function main() {
       width: rong, height: rong < 700 ? 812 : 1000, deviceScaleFactor: 1, mobile: rong < 700,
     })
     await mo(`${BASE}/admin`)
-    await doi(`document.querySelectorAll('.recharts-responsive-container').length >= 3`, 20000)
+    await doi(`document.querySelectorAll('.recharts-responsive-container, [data-chart-empty]').length >= 3`, 20000)
     // Chờ biểu đồ vẽ xong (Recharts có animation khi mount)
     await doi(`[...document.querySelectorAll('.recharts-pie-sector path, .recharts-bar-rectangle path')]
       .filter((p) => (p.getAttribute('d') || '').length > 20).length >= 13`, 15000)
@@ -133,7 +138,12 @@ async function main() {
 
     for (const bd of BIEU_DO) {
       const dulieu = await chay(`(() => {
-        const cont = document.querySelectorAll('.recharts-responsive-container')[${bd.index}]
+        const empty = document.querySelector('[data-chart-empty="${bd.emptyId}"]')
+        if (empty) {
+          const r = empty.getBoundingClientRect()
+          return { empty: true, w: Math.round(r.width), h: Math.round(r.height), text: empty.innerText.trim() }
+        }
+        const cont = document.querySelector('[data-chart-card="${bd.emptyId}"] .recharts-responsive-container')
         if (!cont) return { loi: 'không thấy container' }
         const paths = [...cont.querySelectorAll(${JSON.stringify(bd.selector)})]
         const luoi = cont.querySelector('.recharts-cartesian-grid')
@@ -147,6 +157,12 @@ async function main() {
           }),
         }
       })()`)
+
+      if (dulieu.empty) {
+        const dat = dulieu.w > 0 && dulieu.h > 0 && dulieu.text.length > 0
+        ketQua.push({ rong, ten: bd.ten, dat, empty: true, lyDo: dat ? '' : 'trạng thái rỗng không hiển thị đúng' })
+        continue
+      }
 
       if (dulieu.loi) {
         ketQua.push({ rong, ten: bd.ten, dat: false, lyDo: dulieu.loi })
@@ -188,7 +204,9 @@ async function main() {
       const vd = r.chiTiet?.[0]
       console.log(
         `   ${r.dat ? '✔' : '✘'} ${r.ten}` +
-          (r.dat
+          (r.dat && r.empty
+            ? '  (không có dữ liệu — đã hiện trạng thái rỗng)'
+            : r.dat
             ? `  (mẫu: d=${vd?.dLen} ký tự, ${vd?.w}×${vd?.h}px${r.tyLe ? `, lớn nhất ${Math.round(r.tyLe * 100)}% vùng vẽ` : ''})`
             : `  → ${r.lyDo}`)
       )
@@ -197,7 +215,7 @@ async function main() {
   console.log('\n' + '─'.repeat(64))
   console.log(`Tổng: ${ketQua.length - hong}/${ketQua.length} đạt`)
   if (hong > 0) console.log('✘ CÓ BIỂU ĐỒ KHÔNG VẼ RA HÌNH — xem chi tiết bên trên.')
-  else console.log('✔ Mọi biểu đồ đều vẽ ra hình thật ở mọi bề rộng.')
+  else console.log('✔ Mọi khu vực biểu đồ hiển thị hợp lệ ở mọi bề rộng.')
   process.exit(hong > 0 ? 1 : 0)
 }
 

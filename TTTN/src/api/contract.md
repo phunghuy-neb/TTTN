@@ -1,7 +1,7 @@
 # Hợp đồng API — VietVoyage (FE ⇄ BE)
 
-- **Base URL:** `VITE_API_BASE_URL` (mặc định `http://localhost:5000/api`)
-- **Xác thực:** JWT qua header `Authorization: Bearer <token>`. Payload token: `{ id, role }` (role nhúng từ batch Admin; middleware BE vẫn đọc role từ DB nên đổi quyền là token cũ mất tác dụng phân quyền).
+- **Base URL:** `VITE_API_BASE_URL` (bắt buộc; local dùng `http://localhost:5000/api`)
+- **Xác thực:** trình duyệt nhận JWT trong cookie HttpOnly `vv_session` và gửi tự động với `credentials: include`; API vẫn nhận `Authorization: Bearer <token>` cho CLI/mobile. Middleware luôn đọc role hiện tại từ DB.
 - **Quy ước response:** thành công `{ success: true, ... }`; lỗi 4xx/5xx `{ success: false, message, code }` — `message` tiếng Việt hiển thị được cho người dùng, `code` để FE rẽ nhánh logic.
 - **Role:** enum thực tế trong DB là `['customer', 'admin']` (KHÔNG phải `user`) — FE chỉ được kiểm `role === 'admin'`, không so sánh với `'customer'`/`'user'`.
 
@@ -34,7 +34,7 @@
 | `SERVER_ERROR` | Lỗi 5xx |
 | `NETWORK_ERROR` | (chỉ FE) fetch thất bại — mất mạng/server tắt |
 
-**Phía FE (`services/api.js`):** request có `auth: true` bị 401 → xóa `localStorage['auth']` + phát sự kiện `session-expired` → AuthContext reset user ngay (không cần F5). 401 của `/auth/login` (auth: false) không kích hoạt cơ chế này.
+**Phía FE (`services/api.js`):** không lưu JWT trong `localStorage`; request gửi cookie HttpOnly. `localStorage['auth']` chỉ cache thông tin user không nhạy cảm. Request có `auth: true` bị 401 → xóa cache + phát `session-expired`.
 
 ---
 
@@ -45,6 +45,7 @@
 | POST | `/auth/register` | — | `{ name, email, password }` | `201 { success, message, token, user }` | 400 `VALIDATION_ERROR` / `EMAIL_TAKEN` |
 | POST | `/auth/login` | — | `{ email, password }` | `200 { success, message, token, user }` | 400 `VALIDATION_ERROR`, 401 `INVALID_CREDENTIALS`, 403 `ACCOUNT_LOCKED` |
 | GET | `/auth/me` | ✔ | — | `200 { success, user }` | 401 `AUTH_REQUIRED` / `TOKEN_INVALID` |
+| POST | `/auth/logout` | — | — | `200 { success, message }`, xóa cookie phiên | — |
 | PUT | `/auth/profile` | ✔ | `{ name?, phone? }` | `200 { success, message, user }` | 400 `VALIDATION_ERROR` |
 | PATCH | `/auth/password` | ✔ | `{ oldPassword, newPassword }` | `200 { success, message }` | 400 `WRONG_PASSWORD` (sai mật khẩu cũ) / `VALIDATION_ERROR` |
 
@@ -56,6 +57,7 @@
 |---|---|---|---|---|
 | GET | `/tours` | tùy chọn* | `page, limit, search, region, minPrice, maxPrice, days, minDays, maxDays, sort, deals` | `200 { success, total, page, totalPages, tours[] }` |
 | GET | `/tours/:idOrSlug` | tùy chọn* | — | `200 { success, tour }` — 404 nếu không tồn tại hoặc chưa published |
+| POST | `/tours/:tourId/reviews` | ✔ | multipart `{ bookingId, rating, comment, images[] }` | `201 { success, review }`; chỉ booking `completed`, mỗi booking một lần |
 
 \* Có token admin thì thấy cả tour `draft`/`archived`; khách vãng lai chỉ thấy `published`.
 
@@ -87,12 +89,48 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 
 | Method | Path | Body/Query | Response 2xx | Lỗi |
 |---|---|---|---|---|
-| POST | `/bookings` | `{ tourId, departureId, guests, contact{name,phone,email}, paymentMethod, note }` | `201 { success, message, booking }`; **gửi lặp → `200 { …, duplicate: true }`** kèm ĐƠN CŨ (xem chống đơn trùng bên dưới) | 400 `VALIDATION_ERROR`/`DEPARTURE_NOT_FOUND`/`DEPARTURE_PAST`, 404 tour, **409 `SLOT_UNAVAILABLE`** |
+| POST | `/bookings` | `{ tourId, departureId, guests, contact{name,phone,email}, paymentMethod, note, idempotencyKey }` | `201 { success, message, booking }`; gửi lặp cùng key → `200 { …, duplicate: true }` kèm đơn cũ | 400 `VALIDATION_ERROR`/`DEPARTURE_NOT_FOUND`/`DEPARTURE_PAST`, 404 `TOUR_UNAVAILABLE`, 409 `SLOT_UNAVAILABLE` |
 | GET | `/bookings/my` | `?status&page&limit` | `200 { success, total, page, totalPages, bookings[] }` | 400 status lạ |
+| GET | `/bookings/code/:code` | — | `200 { success, booking }` cho chủ đơn/admin; dùng sau khi trở về từ cổng | 403, 404 |
 | GET | `/bookings/:id` | — | `200 { success, booking }` | 403 (không phải chủ đơn/admin), 404 |
 | PATCH | `/bookings/:id/cancel` | — | `200 { success, message, booking }` — hoàn chỗ về đợt | 400 (không phải pending_payment), 403, 404 |
 
-`booking` gồm `departureId` (ObjectId của đợt — nguồn sự thật) và `departureDate` (bản sao denormalize chỉ để hiển thị). `booking.status` ∈ `pending_payment | paid | cancelled | completed`. `paymentMethod` ∈ `vnpay | momo | later | null`.
+`booking` gồm `departureId`, `departureDate`, `paymentExpiresAt`, `paidAt`, `txnRef`, `lastPaymentAttempt` và tour có `summary`, `itinerary`, `highlights` ở API chi tiết. `booking.status` ∈ `pending_payment | paid | cancelled | completed`; `paymentMethod` ∈ `vnpay | momo | later | null`.
+
+## Yêu thích và thông báo — `protect`
+
+| Method | Path | Body/Query | Response 2xx |
+|---|---|---|---|
+| GET | `/favorites/ids` | — | `{ success, ids[] }` |
+| GET | `/favorites` | `?page&limit` | Danh sách tour đã lưu |
+| GET | `/favorites/suggestions` | `?limit` | Gợi ý theo khu vực, địa điểm và tag của tour đã lưu |
+| POST / DELETE | `/favorites/:tourId` | — | Thêm / bỏ yêu thích, idempotent |
+| GET | `/notifications` | `?page&limit&unreadOnly` | Danh sách và `unreadCount` |
+| PATCH | `/notifications/:id/read` | — | Đánh dấu một thông báo đã đọc |
+| PATCH | `/notifications/read-all` | — | Đánh dấu tất cả đã đọc |
+
+Worker tạo thông báo idempotent cho đơn sắp hết hạn thanh toán, hết hạn, thanh toán thành công/thất bại, admin xác nhận, tour sắp khởi hành, hoàn thành, hủy và thay đổi hiển thị đánh giá.
+
+## Payments
+
+| Method | Path | Auth | Body / callback | Kết quả |
+|---|---|---|---|---|
+| GET | `/payments/config` | — | — | Trạng thái cấu hình Sandbox của VNPay/MoMo, không trả key |
+| POST | `/payments/:bookingId/initiate` | Chủ đơn | `{ provider: 'vnpay'|'momo' }` | `{ success, provider, paymentUrl, paymentQrDataUrl?, deeplink?, expiresAt, reused }` |
+| GET | `/payments/vnpay/return` | Chữ ký VNPay | Query VNPay | Xử lý idempotent rồi redirect FE `/payment` |
+| GET | `/payments/vnpay/ipn` | Chữ ký VNPay | Query VNPay | Response `RspCode` theo VNPay |
+| GET | `/payments/momo/return` | Chữ ký MoMo | Query MoMo | Xử lý idempotent rồi redirect FE `/payment` |
+| POST | `/payments/momo/ipn` | Chữ ký MoMo | JSON MoMo | Xử lý idempotent |
+| GET | `/payments/review-required` | Admin | — | Danh sách giao dịch thành công về muộn/cần đối soát |
+
+Admin có thể dùng `PATCH /admin/payments/:id/confirm-sandbox` với body
+`{ transactionRef, note? }` để mô phỏng xác nhận giao dịch VNPay/MoMo khi không có
+ứng dụng UAT. API chỉ nhận attempt `initiated`, booking còn hạn và provider đang ở
+Sandbox; thao tác lưu admin vào `statusHistory`, dùng response code
+`ADMIN_SANDBOX_CONFIRMED`, phát hành vé và không được bật cho môi trường thanh toán thật.
+
+Backend so khớp chữ ký, merchant/partner, `orderId` và số tiền trước khi ghi nhận. Admin không được đánh dấu đơn VNPay/MoMo là `paid` bằng API trạng thái.
+Khách có thể đổi VNPay/MoMo sau khi lần trước đã `failed/expired`; nếu còn attempt `creating/initiated`, backend chặn cổng khác để không mở đồng thời hai URL thanh toán.
 
 ## Admin — `protect + requireAdmin` (mới) / `authorize('admin')` (cũ)
 
@@ -109,18 +147,20 @@ CRUD tour của admin chuyển hẳn về đây; các route mutation cũ trên `
 | PATCH | `/admin/users/:id/role` | `{ role: 'customer'\|'admin' }` | `200 { success, message, user }` — tự hạ quyền → 409 `CANNOT_DEMOTE_SELF` |
 | GET | `/admin/bookings` | `?status&tourId&userId&search&dateFrom&dateTo&sort&page&limit` — `search` khớp mã đơn/tên tour/tên/email/SĐT khách; `dateFrom/dateTo` là khoảng **ngày đặt** (createdAt, trọn ngày) | `200 { success, total, page, totalPages, bookings[] }` — booking kèm `departureId`, `departureDate`, `statusHistory` |
 | GET | `/admin/bookings/:id` | — | `200 { success, booking }` — populate user + tour, kèm `statusHistory` |
-| GET | `/admin/bookings/stats` | — | `200 { success, stats }` (endpoint cũ, chỉ tính đơn `paid` — dashboard dùng `/admin/stats`) |
-| PATCH | `/admin/bookings/:id/status` | `{ status, txnRef?, paymentMethod? }` | `200 { success, message, booking }` | 
+| GET | `/admin/bookings/stats` | — | `200 { success, stats }` (doanh thu tính `paid` + `completed`) |
+| PATCH | `/admin/bookings/:id/status` | `{ status, txnRef? }` | `200 { success, message, booking }`; online không được xác nhận paid thủ công |
+| GET | `/admin/reviews` | `?q&rating&visibility&page&limit` | Danh sách đánh giá nhúng trong tour, kèm khách và tour |
+| PATCH | `/admin/reviews/:tourId/:reviewId/visibility` | `{ isVisible: boolean }` | Ẩn/hiện đánh giá, tính lại `avgRating` và báo cho khách |
 
-**Chống đơn trùng khi đặt tour (Batch 8).** Cùng `user + tour + departureId` gửi lại trong **10 giây** được coi là MỘT lần đặt bị gửi lặp (double-click, mạng chậm rồi bấm lại, F5 gửi lại form): API trả **200** kèm `duplicate: true` và **chính đơn đã tạo**, không tạo đơn mới và không trừ chỗ lần hai. Cố ý không trả lỗi — người dùng bấm hai lần không phải lỗi của họ, báo lỗi sẽ khiến họ tưởng đặt hỏng rồi đặt lại. Hai lớp bảo vệ: kiểm trước khi ghi (bắt các lần gửi tuần tự) và **unique index `idemKey`** trên Booking (chốt thật cho request bay song song — kiểm-rồi-ghi không chặn được vì mọi request cùng đọc "chưa có đơn" trước khi ai kịp ghi). FE còn khoá thêm bằng `useRef` để nhiều click trong cùng một tick không gửi đi. Giới hạn đã biết: hai request song song rơi đúng hai bên mốc chia ô 10 giây vẫn có thể tạo 2 đơn — xác suất rất thấp, chấp nhận được.
+**Chống đơn trùng.** FE tạo một `idempotencyKey` ngẫu nhiên cho mỗi lần xác nhận checkout và giữ nguyên khi retry. Backend lưu `user:idempotencyKey` trong unique index; request song song thua index được rollback cả booking lẫn slot rồi nhận lại đúng đơn cũ.
 
-**Máy trạng thái đơn (Batch 4)** — `PATCH /admin/bookings/:id/status` chỉ chấp nhận: `pending_payment → paid | cancelled`; `paid → completed | cancelled`; `completed`/`cancelled` là trạng thái cuối. Sai luồng → **409 `INVALID_STATUS_TRANSITION`** kèm `currentStatus`, DB không đổi. Flip trạng thái có điều kiện (2 admin bấm đồng thời → người sau 409, không hoàn chỗ 2 lần). Chuyển sang `cancelled` hoàn chỗ **nguyên tử theo `departureId`**; đơn mồ côi (departureId null) bỏ qua hoàn chỗ + ghi log. Mỗi lần đổi ghi thêm `statusHistory: [{from, to, byUserId, at}]` (user tự hủy cũng ghi).
+**Máy trạng thái đơn** — `pending_payment → paid | cancelled`; `paid → completed`; `completed`/`cancelled` là cuối. Đơn đã thu tiền không thể bị hủy bằng thao tác trạng thái vì cần quy trình refund riêng. Tạo/hủy/hết hạn đơn và thay đổi slot được commit trong MongoDB transaction.
 
 Lỗi chung khu admin: 401 `AUTH_REQUIRED`/`TOKEN_INVALID` (không token/token hỏng), 403 `ADMIN_ONLY` (đăng nhập nhưng không phải admin).
 
 ---
 
-## 🤖 Trợ lý AI (UC-07) — ⚠ ĐANG CHẠY STUB (Batch 5)
+## 🤖 Trợ lý AI (UC-07)
 
 **Trạng thái:** BE đang trả lời bằng **stub nội bộ** (từ khóa tiếng Việt + gợi ý tour THẬT từ MongoDB). Nối AI thật của Tuấn Anh **không cần sửa FE**: chỉ set `AI_SERVICE_URL` trong `.env` của BE — adapter duy nhất ở `TTTN_BE/src/services/aiAdapter.js` (đã đánh dấu `TODO(ai)`).
 
@@ -150,3 +190,14 @@ response: { reply: string, suggestedTours: [{ _id, title, price, image }] }
 **Migration đã chạy (04/08/2026):** `scripts/migrate-departures.mjs` (idempotent, có `--dry-run`) cấp `_id` + `totalSlots` cho 24/24 đợt, backfill `departureId` cho 3/9 đơn khớp được. **6 đơn mồ côi từ trước** (trỏ tour đã bị seed xóa) ghi tại `C:\TTTN\orphan-bookings.json` — không xóa, không đoán; các đơn này `departureId = null`, khi hủy sẽ bỏ qua bước hoàn chỗ và ghi log. Rollback: `scripts/rollback-departures.mjs` (đã test trên bản restore từ backup) hoặc `mongorestore` từ `C:\TTTN\backup-batch2-20260804-231856`.
 
 **Quy tắc cho màn admin sửa tour (batch sau):** `PUT /tours/:id` thay `departures` NGUYÊN MẢNG — đợt đã tồn tại **bắt buộc gửi kèm `_id` cũ** (thiếu `_id` → Mongoose sinh id mới → booking đang trỏ tới đợt đó thành mồ côi). Đợt mới thì không gửi `_id`. Khi sửa đợt phải gửi đủ `totalSlots` + `availableSlots`.
+# API bổ sung: vé, voucher và vận hành (2026-08)
+
+- `GET /tickets/verify/:token` — API công khai, chỉ trả mã vé/booking, tour, ngày đi, số khách và trạng thái.
+- `GET /tickets/verify-page/:token` — trang HTML xác minh độc lập dùng trực tiếp trong QR; không cần đăng nhập và không phụ thuộc JavaScript của frontend.
+- `GET /tickets/booking/:bookingId` và `/pdf` — chủ booking hoặc admin.
+- `POST /vouchers/validate` — body `{ code, tourId, departureId, guests }`; backend đọc giá thật.
+- `/admin/vouchers`, `/admin/tickets`, `/admin/payments` — quản lý voucher, check-in và đối soát.
+- `GET /admin/operations/calendar` — lịch đợt khởi hành.
+- `GET /admin/operations/reports/bookings|revenue?format=csv|xlsx` — tải báo cáo.
+
+`POST /bookings` nhận thêm `voucherCode`. Client không gửi giá: backend tự tính `originalPrice`, `discountAmount`, snapshot `voucher` và `totalPrice` trong cùng transaction với trừ chỗ/lượt voucher.
