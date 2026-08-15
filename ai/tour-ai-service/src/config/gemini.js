@@ -12,6 +12,23 @@ const { GoogleGenAI } = require("@google/genai");
 
 let client = null;
 
+function positiveTimeout(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function withTimeout(promise, timeoutMs, operation) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${operation} timed out`);
+      error.code = "GEMINI_TIMEOUT";
+      reject(error);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function getClient() {
   if (!client) {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -33,13 +50,17 @@ async function generateChatReply(prompt, systemInstruction) {
   const ai = getClient();
   const model = process.env.GEMINI_CHAT_MODEL || "gemini-3.5-flash";
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: prompt,
-    ...(systemInstruction
-      ? { config: { systemInstruction } }
-      : {}),
-  });
+  const response = await withTimeout(
+    ai.models.generateContent({
+      model,
+      contents: prompt,
+      ...(systemInstruction
+        ? { config: { systemInstruction } }
+        : {}),
+    }),
+    positiveTimeout(process.env.GEMINI_GENERATION_TIMEOUT_MS, 20_000),
+    "Gemini generation"
+  );
 
   return response.text?.trim() || "";
 }
@@ -64,13 +85,17 @@ async function embedBatch(texts) {
   const ai = getClient();
   const model = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
 
-  const response = await ai.models.embedContent({
-    model,
-    contents: texts,
-  });
+  const response = await withTimeout(
+    ai.models.embedContent({
+      model,
+      contents: texts,
+    }),
+    positiveTimeout(process.env.GEMINI_EMBEDDING_TIMEOUT_MS, 12_000),
+    "Gemini embedding"
+  );
 
   // SDK trả về mảng embeddings tương ứng thứ tự input
   return response.embeddings.map((e) => e.values);
 }
 
-module.exports = { generateChatReply, embedText, embedBatch, getClient };
+module.exports = { generateChatReply, embedText, embedBatch, getClient, withTimeout };

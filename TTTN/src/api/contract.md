@@ -137,7 +137,7 @@ Khách có thể đổi VNPay/MoMo sau khi lần trước đã `failed/expired`;
 | Method | Path | Body/Query | Response 2xx |
 |---|---|---|---|
 | GET | `/admin/stats` | — | `200 { success, stats }` — aggregate thật: `totalTours, totalBookings, totalUsers, revenue` (Σ đơn `paid`+`completed`) + **Batch 4**: `monthlyRevenue[{year,month,revenue,count}]` (6 tháng theo ngày đặt), `byStatus{status:n}`, `topTours[{tourId,tourName,soDon,doanhThu}]` (top 5, bỏ đơn hủy), `latestBookings[]` (5 đơn mới, populate user) + **Batch 7**: `currentMonthRevenue` (doanh thu THÁNG hiện tại — khác mảng monthlyRevenue), `pendingBookings`, `activeTours` (isActive≠false), `revenueByRegion[{region,revenue,bookings}]` (đủ 3 miền kể cả revenue 0) |
-| GET | `/admin/ai-settings` | — | `200 { success, aiServiceUrl (đã che), status: 'not_configured'\|'online'\|'offline' (ping thật timeout 3s), chatEnabled, totalMessages, uniqueUsers }` |
+| GET | `/admin/ai-settings` | — | `200 { success, aiServiceUrl (đã che), status: 'not_configured'\|'online'\|'offline' (ping thật timeout 3s), capabilityStatus?, capabilities?, indexReconciliation?, chatEnabled, totalMessages, uniqueUsers }`; capability fields phân biệt process/Mongo/Chroma/index/provider và là additive |
 | PATCH | `/admin/ai-settings` | `{ chatEnabled: boolean }` | `200 { success, message, chatEnabled }` — upsert collection `settings` (key-value) |
 | GET | `/settings/public` | — (**không cần đăng nhập**) | `200 { success, chatEnabled }` — FE đọc lúc mount để quyết định render ChatWidget |
 | GET | `/admin/users` | `?search&role&isActive&sort&page&limit` | `200 { success, total, page, totalPages, users[] }` — mỗi user kèm `soDon` (tổng đơn) |
@@ -162,21 +162,33 @@ Lỗi chung khu admin: 401 `AUTH_REQUIRED`/`TOKEN_INVALID` (không token/token h
 
 ## 🤖 Trợ lý AI (UC-07)
 
-**Trạng thái:** BE đang trả lời bằng **stub nội bộ** (từ khóa tiếng Việt + gợi ý tour THẬT từ MongoDB). Nối AI thật của Tuấn Anh **không cần sửa FE**: chỉ set `AI_SERVICE_URL` trong `.env` của BE — adapter duy nhất ở `TTTN_BE/src/services/aiAdapter.js` (đã đánh dấu `TODO(ai)`).
+**Trạng thái:** Backend gọi AI service qua **AI Chat Contract v1** và validate semantic payload trước khi commit logical turn. HTTP 2xx không tự động được coi là thành công; payload sai action/reply/structured content/state/ID bị trả `AI_RESPONSE_INVALID` và không persist message, state hoặc preference.
 
 | Method | Path | Auth | Body/Query | Response 2xx | Lỗi |
 |---|---|---|---|---|---|
-| POST | `/chat` | ✔ | `{ message (≤1000 ký tự), tourId? }` — `tourId` nhận cả ObjectId lẫn slug, dùng bơm context tour đang xem | `200 { success, reply, suggestedTours }` | 400 `VALIDATION_ERROR`, **503 `AI_UNAVAILABLE`** (URL cấu hình nhưng AI chết/timeout 30s — KHÔNG rơi về stub để vận hành biết sự cố) |
-| GET | `/chat/history` | ✔ | `?page&limit` | `200 { success, total, page, totalPages, messages[] }` — sắp MỚI → CŨ, mỗi tin `{ _id, role: 'user'\|'assistant', content, tourId, at }` | |
-| DELETE | `/chat/history` | ✔ | — | `200 { success, message }` — xóa toàn bộ hội thoại của mình | |
+| POST | `/chat` | ✔ | `{ message (≤1000 ký tự), tourId?, conversationId?, clientMessageId?, requestId?, pageContext? }` — retry cùng logical turn phải gửi lại cùng `clientMessageId`; mỗi transport attempt có thể dùng `requestId` mới; cũng nhận header `Idempotency-Key` và `x-request-id` | `200 { success, contractVersion, reply, suggestedTours, candidateList?, structuredContent, decision, outcome, serviceStatus, warnings, requestId, clientMessageId, turnSequence, historyEpoch, conversation }`; response luôn echo `x-request-id`; `serviceStatus.degraded=true` có thể đi cùng success khi safe fallback vẫn dùng được | 400 `VALIDATION_ERROR`, 409 `LOGICAL_TURN_CONFLICT`/`CONVERSATION_CLEARED`, 429 `RATE_LIMIT`, 502 `AI_RESPONSE_INVALID`, 503 `AI_UNAVAILABLE`/`AI_PROVIDER_UNAVAILABLE`/`AI_PROVIDER_RATE_LIMITED`/`RAG_DEGRADED` |
+| POST | `/chat/conversations` | ✔ | `{ title? }` | `201 { success, conversation }` | |
+| GET | `/chat/conversations` | ✔ | `?page&limit` | `200 { success, conversations[], total, page, limit, totalPages, hasMore }` | |
+| GET | `/chat/conversations/:conversationId/messages` | ✔ | `?page&limit` | `200 { success, conversation, messages[], total, page, limit, totalPages, hasMore }`; message assistant có thể thêm `suggestedTours` presentation snapshot và `candidateList` để reconstruct cards/reference sau reload | 404 `CONVERSATION_NOT_FOUND`, 409 `CHAT_CONSISTENCY_ERROR` |
+| GET | `/chat/history` | ✔ | `?page&limit` | `200 { success, total, page, limit, totalPages, hasMore, messages[] }` — alias tương thích ngược, sắp MỚI → CŨ; mỗi tin thêm `clientMessageId`, `turnSequence`, `historyEpoch` | 409 `CHAT_CONSISTENCY_ERROR` nếu marker lệch state |
+| DELETE | `/chat/history` | ✔ | `{ conversationId? }` | `200 { success, message, historyEpoch }` — transaction tăng epoch, xóa messages và fence request thuộc epoch cũ | |
 
-**Shape CỐ ĐỊNH đã chốt với AI service** (Tuấn Anh code theo đúng cái này):
+### Logical-turn observability
+
+- `requestId` identifies one transport attempt; `clientMessageId` identifies the stable logical turn across retries.
+- Backend persists a redacted internal trace on `ChatTurn` with lifecycle identity, Semantic State V2 before/delta/after, authoritative action, retrieval/ranking/grounding summaries, provider validation/fallback, and persistence result.
+- The internal trace is not returned to public clients. Prompt text, chat history, credentials, raw semantic spans, and direct user identifiers are excluded; user identity is represented by a one-way hash.
+- AI health exposes separate `process`, `mongo`, `chroma`, `index`, `provider`, and `fallback` capabilities. A missing/degraded provider or index cannot produce a false-green overall status.
+
+**Shape versioned giữa Backend và AI service:**
 ```
 POST {AI_SERVICE_URL}/chat
-body    : { message, userName, tourContext | null }
-response: { reply: string, suggestedTours: [{ _id, title, price, image }] }
+headers : x-internal-api-key, x-ai-principal-id, x-ai-contract-version: 1
+body    : { contractVersion: 1, prompt, userName, tourContext | null, pageContext, constraintState, entityState, history, bookingContext, preferenceContext }
+success : { success: true, contractVersion: 1, reply, decision: { action, operation, reason, requiredMissing, optionalMissing, assumptions, clarification }, tours, referencedTourIds, referencedBookingIds, constraintState, entityState, structuredContent, retrievalStatus?, providerStatus?, outcome, warnings[] }
+error   : { success: false, contractVersion: 1, error: { code, message, source, retryable } }
 ```
-`tourContext` = `{ _id, name, basePrice, days, region, itinerarySo }`. Hội thoại lưu ở collection `chatMessages { userId, role, content, tourId, at }` — chỉ lưu khi trả lời thành công.
+Backend tạo `x-ai-principal-id` bằng HMAC từ authenticated `userId` và shared internal key; header do public client gửi không được forward hoặc dùng làm limiter identity. Payload legacy không có `contractVersion` vẫn được nhận nếu pass toàn bộ semantic validation; version tường minh không tương thích bị reject. `tourContext` = `{ _id, name, basePrice, days, region, itinerarySo }`. Mỗi logical turn có journal `chatTurns`; preference delta, đúng hai `chatMessages`, conversation state và cached response được commit trong cùng Mongo transaction sau khi AI trả lời thành công.
 
 ## ✅ RESOLVED: departureId (Batch 2 — 04/08/2026)
 

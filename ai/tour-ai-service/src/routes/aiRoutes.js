@@ -1,60 +1,86 @@
 const express = require("express");
 const { getRagContext } = require("../services/ragService");
 const { generateChatAnswer, streamChatAnswer } = require("../services/chatService");
-const { syncTourVectors } = require("../services/syncService");
+const { syncTourVectors, reconcileTourIndex } = require("../services/syncService");
+const { inspectIndexIntegrity, publicCapabilitySnapshot } = require("../services/indexIntegrityService");
+const { normalizeAiTraceContext } = require("../services/aiTraceService");
+const {
+  AI_CHAT_CONTRACT_VERSION,
+  ERROR_CODES,
+  AiServiceError,
+  successEnvelope,
+  errorEnvelope,
+  normalizeAiError,
+} = require("../services/aiContractService");
 
 const router = express.Router();
 
-/**
- * POST /api/ai/context
- * Nhiệm vụ chính Tuần 3 — nhận { prompt }, trả về context liên quan
- * (chưa sinh câu trả lời tự nhiên).
- */
+function chatInput(body = {}, req = null) {
+  return {
+    contractVersion: body.contractVersion,
+    prompt: body.prompt,
+    userName: body.userName || "",
+    tourContext: body.tourContext || null,
+    pageContext: body.pageContext || {},
+    constraintState: body.constraintState || {},
+    entityState: body.entityState || {},
+    history: Array.isArray(body.history) ? body.history : [],
+    bookingContext: body.bookingContext && typeof body.bookingContext === "object" ? body.bookingContext : null,
+    preferenceContext: body.preferenceContext && typeof body.preferenceContext === "object" ? body.preferenceContext : null,
+    traceContext: normalizeAiTraceContext(body.traceContext, req?.aiPrincipal || ""),
+  };
+}
+
+function invalidInput(message) {
+  return new AiServiceError(ERROR_CODES.INVALID_INPUT, message, {
+    status: 400,
+    source: "ai_contract",
+    retryable: false,
+  });
+}
+
+function validateInput(input) {
+  if (input.contractVersion != null && Number(input.contractVersion) !== AI_CHAT_CONTRACT_VERSION) {
+    throw invalidInput(`Unsupported contract version: ${input.contractVersion}`);
+  }
+  if (typeof input.prompt !== "string" || !input.prompt.trim()) throw invalidInput("prompt is required");
+  return input;
+}
+
+function sendError(res, error) {
+  const normalized = normalizeAiError(error);
+  return res.status(normalized.status).json(errorEnvelope(normalized));
+}
+
 router.post("/context", async (req, res) => {
   try {
-    const { prompt, tourContext = null, history = [], userName = '' } = req.body;
-    if (!prompt || typeof prompt !== "string") {
-      return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
-    }
-
-    const { intent, tours, contextText, matchedChunks } = await getRagContext(prompt, tourContext);
-    res.json({ intent, tours, contextText, matchedChunks });
-  } catch (err) {
-    console.error("[POST /api/ai/context]", err);
-    res.status(500).json({ error: "Lỗi xử lý context", detail: err.message });
+    const input = validateInput(chatInput(req.body, req));
+    res.json(await getRagContext(input.prompt, input));
+  } catch (error) {
+    console.error("[ai.context.request.error]", { errorCode: error?.code || null, errorName: error?.name || "Error" });
+    sendError(res, error);
   }
 });
 
-/**
- * POST /api/ai/chat
- * Trả về cả context lẫn câu trả lời tự nhiên do Gemini sinh dựa trên context
- * (không streaming — dùng khi client không cần trải nghiệm gõ chữ realtime).
- */
 router.post("/chat", async (req, res) => {
   try {
-    const { prompt, tourContext = null, history = [], userName = '' } = req.body;
-    if (!prompt || typeof prompt !== "string") {
-      return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
-    }
-
-    const { reply, intent, tours } = await generateChatAnswer(prompt, tourContext, history, userName);
-    res.json({ reply, intent, tours });
-  } catch (err) {
-    console.error("[POST /api/ai/chat]", err);
-    res.status(500).json({ error: "Lỗi xử lý chat", detail: err.message });
+    const input = validateInput(chatInput(req.body, req));
+    res.json(successEnvelope(await generateChatAnswer(input)));
+  } catch (error) {
+    console.error("[ai.chat.request.error]", {
+      errorCode: error?.code || null,
+      errorName: error?.name || "Error",
+    });
+    sendError(res, error);
   }
 });
 
-/**
- * POST /api/ai/chat/stream
- * Tuần 4 — phiên bản streaming của /api/ai/chat, dùng Server-Sent Events (SSE).
- * Mỗi sự kiện "chunk" chứa một đoạn text nhỏ, sự kiện "done" báo kết thúc kèm
- * intent + tours để Frontend hiển thị card gợi ý tour bên cạnh câu trả lời.
- */
 router.post("/chat/stream", async (req, res) => {
-  const { prompt, tourContext = null } = req.body;
-  if (!prompt || typeof prompt !== "string") {
-    return res.status(400).json({ error: "Thiếu trường 'prompt' (string) trong body" });
+  let input;
+  try {
+    input = validateInput(chatInput(req.body, req));
+  } catch (error) {
+    return sendError(res, error);
   }
 
   res.writeHead(200, {
@@ -62,45 +88,50 @@ router.post("/chat/stream", async (req, res) => {
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
-
   const send = (event, data) => {
     res.write(`event: ${event}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
   try {
-    const { intent, tours, fullReply } = await streamChatAnswer(prompt, (chunkText) => {
-      send("chunk", { text: chunkText });
-    }, tourContext);
-    send("done", { intent, tours, fullReply });
-  } catch (err) {
-    console.error("[POST /api/ai/chat/stream]", err);
-    send("error", { message: err.message });
+    const result = await streamChatAnswer(input, (value) => send("chunk", { text: value }));
+    send("done", successEnvelope(result));
+  } catch (error) {
+    console.error("[ai.chat.stream.error]", { errorCode: error?.code || null, errorName: error?.name || "Error" });
+    send("error", errorEnvelope(error));
   } finally {
     res.end();
   }
 });
 
-/**
- * POST /api/ai/sync-vectors
- * Cho phép Admin (Backend chính gọi hộ, hoặc gọi trực tiếp) kích hoạt đồng bộ
- * dữ liệu Tour -> ChromaDB thủ công, theo đặc tả "Quản trị hệ thống AI (Vector Sync)".
- * Body tùy chọn: { force: boolean } — true để đồng bộ lại toàn bộ, kể cả tour đã synced.
- */
 router.post("/sync-vectors", async (req, res) => {
   try {
-    const force = Boolean(req.body?.force);
-    const result = await syncTourVectors({ force });
-    res.json(result);
-  } catch (err) {
-    console.error("[POST /api/ai/sync-vectors]", err);
-    res.status(500).json({ error: "Lỗi đồng bộ vector", detail: err.message });
+    const sync = await syncTourVectors({ force: Boolean(req.body?.force) });
+    const integrity = publicCapabilitySnapshot(await inspectIndexIntegrity());
+    res.json({ ...sync, integrity });
+  } catch (error) {
+    console.error("[ai.sync-vectors.error]", error);
+    sendError(res, error);
   }
 });
 
-/** GET /health — kiểm tra server còn sống */
-router.get("/health", (req, res) => {
-  res.json({ status: "ok", service: "tour-ai-service", time: new Date().toISOString() });
+router.post("/reconcile-index", async (req, res) => {
+  try {
+    const result = await reconcileTourIndex({ repair: req.body?.repair !== false });
+    res.json({
+      before: publicCapabilitySnapshot(result.before),
+      recovery: result.recovery,
+      after: publicCapabilitySnapshot(result.after),
+    });
+  } catch (error) {
+    console.error("[ai.reconcile-index.error]", error);
+    sendError(res, error);
+  }
+});
+
+router.get("/health", async (req, res) => {
+  const snapshot = publicCapabilitySnapshot(await inspectIndexIntegrity());
+  res.json({ ...snapshot, service: "tour-ai-service", contractVersion: AI_CHAT_CONTRACT_VERSION });
 });
 
 module.exports = router;

@@ -1,54 +1,35 @@
-import { useState, useEffect, useRef } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext.jsx'
-import { sendChatMessage, getChatHistory, clearChatHistory } from '../../services/chatService.js'
+import { useChat } from '../../context/ChatContext.jsx'
 import { getPublicSettings } from '../../services/settingsService.js'
-import { formatPrice } from '../../utils/format.js'
 import { onOpenChat } from './chatEvents.js'
-import Button from '../ui/Button.jsx'
+import ChatSurface from './ChatSurface.jsx'
+import ConversationList from './ConversationList.jsx'
+import {
+  ArrowUpRightIcon,
+  BotIcon,
+  CloseIcon,
+  HistoryIcon,
+  PlusIcon,
+} from './ChatIcons.jsx'
 
-// Hàm format markdown đơn giản cho phản hồi của AI
-function formatMarkdown(text) {
-  if (!text) return { __html: '' }
-
-  // Nội dung đến từ AI và được lưu trong DB: escape HTML trước khi thêm đúng
-  // hai định dạng cho phép. Nếu làm ngược lại, prompt injection có thể tạo
-  // <img onerror=...> và lấy JWT trong localStorage (stored XSS).
-  const escaped = String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-
-  // Replace **bold** with <strong>bold</strong>
-  let html = escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-  
-  // Convert bullet points (* text or - text at the start of a line) to a nice dot
-  html = html.replace(/^[*-]\s/gm, '• ')
-  
-  return { __html: html }
-}
-
-// Widget chat với trợ lý AI (UC-07): nút nổi + panel góc phải dưới.
-// - Chưa đăng nhập → mời đăng nhập, KHÔNG gọi API nào.
-// - Đang ở /tour/:slug → gửi kèm tourId (slug) làm context.
-// - BE 503 AI_UNAVAILABLE → thông báo lịch sự trong panel, web còn lại vẫn chạy.
 export default function ChatWidget() {
   const { user } = useAuth()
-  const { pathname } = useLocation()
-  const navigate = useNavigate()
-
+  const {
+    conversations,
+    activeConversationId,
+    loadingConversations,
+    loadingMoreConversations,
+    conversationPagination,
+    creatingConversation,
+    loadMoreConversations,
+    createNewConversation,
+    selectConversation,
+  } = useChat()
   const [open, setOpen] = useState(false)
-  const [messages, setMessages] = useState([]) // { role, content, suggestedTours? }
-  const [input, setInput] = useState('')
-  const [typing, setTyping] = useState(false)
-  const [daNapLichSu, setDaNapLichSu] = useState(false)
-  const [choXoa, setChoXoa] = useState(false)
-  // Admin có thể tắt chat toàn site (Batch 7) — đọc cài đặt public khi mount,
-  // tắt là KHÔNG render gì (cả nút nổi lẫn panel)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [chatEnabled, setChatEnabled] = useState(true)
-  const cuoiDanhSach = useRef(null)
 
   useEffect(() => {
     getPublicSettings().then((res) => {
@@ -56,227 +37,146 @@ export default function ChatWidget() {
     })
   }, [])
 
-  // Slug tour đang xem — BE nhận cả slug lẫn ObjectId làm tourId
-  const tourId = pathname.match(/^\/tour\/([^/]+)$/)?.[1] || ''
-
-  // Các nút CTA "Hỏi trợ lý AI" ở Home/TourDetail mở panel qua event bus
   useEffect(() => onOpenChat(() => setOpen(true)), [])
 
-  // Đổi tài khoản / đăng xuất → panel nạp lại lịch sử của người mới
   useEffect(() => {
-    setMessages([])
-    setDaNapLichSu(false)
+    setHistoryOpen(false)
   }, [user?._id])
 
-  // Nạp lịch sử khi mở panel lần đầu (chỉ khi đã đăng nhập)
-  useEffect(() => {
-    if (!open || !user || daNapLichSu) return
-    ;(async () => {
-      const res = await getChatHistory({ limit: 20 })
-      setDaNapLichSu(true)
-      if (res.success) {
-        // BE trả mới → cũ; đảo lại để hiển thị cũ → mới
-        setMessages([...res.data].reverse().map((m) => ({ role: m.role, content: m.content })))
-      }
-    })()
-  }, [open, user, daNapLichSu])
-
-  // Tự cuộn xuống cuối khi có tin mới / đang gõ
-  useEffect(() => {
-    cuoiDanhSach.current?.scrollIntoView({ block: 'end' })
-  }, [messages, typing, open])
-
-  async function gui(e) {
-    e?.preventDefault()
-    const noiDung = input.trim()
-    if (!noiDung || typing || !user) return
-    setInput('')
-    setChoXoa(false)
-    setMessages((ms) => [...ms, { role: 'user', content: noiDung }])
-    setTyping(true)
-
-    const res = await sendChatMessage({ message: noiDung, tourId })
-    setTyping(false)
-
-    if (!res.success) {
-      // 503 AI_UNAVAILABLE hoặc lỗi mạng — báo trong panel, không phá gì khác
-      setMessages((ms) => [
-        ...ms,
-        {
-          role: 'assistant',
-          loi: true,
-          content:
-            res.code === 'AI_UNAVAILABLE'
-              ? res.message || 'Trợ lý AI đang tạm gián đoạn. Bạn thử lại sau ít phút nhé.'
-              : res.message || 'Không gửi được tin nhắn. Vui lòng thử lại.',
-        },
-      ])
-      return
-    }
-    setMessages((ms) => [
-      ...ms,
-      { role: 'assistant', content: res.reply, suggestedTours: res.suggestedTours || [] },
-    ])
+  async function newChat() {
+    if (!user) return
+    await createNewConversation()
+    setHistoryOpen(false)
   }
 
-  async function xoaHoiThoai() {
-    const res = await clearChatHistory()
-    setChoXoa(false)
-    if (res.success) setMessages([])
+  async function chooseConversation(conversationId) {
+    await selectConversation(conversationId)
+    setHistoryOpen(false)
   }
 
   if (!chatEnabled) return null
 
   return (
     <>
-      {/* Panel chat */}
-      <div
-        className={`fixed bottom-[98px] right-[16px] z-[60] flex max-h-[70vh] w-[min(380px,calc(100vw-32px))] flex-col overflow-hidden rounded-[20px] border border-line bg-white shadow-2xl transition sm:right-[26px] ${
-          open ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-5 opacity-0'
+      <section
+        className={`fixed bottom-[196px] right-3 z-[70] flex h-[min(580px,calc(100dvh-300px))] w-[min(390px,calc(100vw-24px))] flex-col overflow-hidden rounded-[22px] border border-line bg-white shadow-2xl transition sm:bottom-[210px] sm:right-[26px] sm:h-[min(620px,calc(100dvh-244px))] ${
+          open
+            ? 'pointer-events-auto translate-y-0 opacity-100'
+            : 'pointer-events-none translate-y-4 opacity-0'
         }`}
         role="dialog"
-        aria-label="Chat với trợ lý AI"
+        aria-label="Trợ lý VietVoyage"
+        aria-hidden={!open}
       >
-        {/* Header */}
-        <div className="flex items-center gap-3 bg-gradient-to-br from-teal to-jade px-[18px] py-3.5 text-white">
-          <span className="grid h-[38px] w-[38px] place-items-center rounded-[12px] bg-white/20 text-[18px]">✦</span>
-          <div className="flex-1">
-            <b className="font-heading text-[16px]">Trợ lý du lịch</b>
-            <small className="block text-xs text-[#C9EBE2]">Hỏi về giá, lịch trình, cách đặt tour…</small>
+        <header className="flex shrink-0 items-center gap-2 bg-gradient-to-br from-teal to-jade px-3.5 py-3 text-white">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/15">
+            <BotIcon className="h-6 w-6" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate font-heading text-[16px] font-semibold">Trợ lý VietVoyage</h2>
+            <p className="truncate text-[11.5px] text-white/75">Tư vấn hành trình của riêng bạn</p>
           </div>
-          {user && messages.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setChoXoa((v) => !v)}
-              className="rounded-[8px] px-2 py-1 text-[12.5px] text-white/85 transition hover:bg-white/15"
-              title="Xóa hội thoại"
-            >
-              Xóa
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((value) => !value)}
+            aria-label="Mở lịch sử trò chuyện"
+            aria-expanded={historyOpen}
+            title="Lịch sử trò chuyện"
+            className={`grid h-9 w-9 place-items-center rounded-lg transition hover:bg-white/15 ${
+              historyOpen ? 'bg-white/20' : ''
+            }`}
+          >
+            <HistoryIcon />
+          </button>
+          <button
+            type="button"
+            onClick={newChat}
+            disabled={creatingConversation}
+            aria-label="Tạo chat mới"
+            title="Chat mới"
+            className="grid h-9 w-9 place-items-center rounded-lg transition hover:bg-white/15 disabled:cursor-wait disabled:opacity-50"
+          >
+            <PlusIcon />
+          </button>
           <button
             type="button"
             onClick={() => setOpen(false)}
             aria-label="Đóng chat"
-            className="rounded-[8px] px-2 py-1 text-white/85 transition hover:bg-white/15"
+            title="Đóng"
+            className="grid h-9 w-9 place-items-center rounded-lg transition hover:bg-white/15"
           >
-            ✕
+            <CloseIcon />
           </button>
-        </div>
+        </header>
 
-        {/* Xác nhận xóa hội thoại */}
-        {choXoa && (
-          <div className="flex items-center justify-between gap-2 border-b border-line bg-coral/5 px-4 py-2 text-[13px] text-coralD">
-            Xóa toàn bộ hội thoại?
-            <span className="flex gap-2">
-              <button type="button" className="font-semibold" onClick={xoaHoiThoai}>Xóa</button>
-              <button type="button" className="text-muted" onClick={() => setChoXoa(false)}>Thôi</button>
-            </span>
-          </div>
-        )}
-
-        {/* Thân panel */}
         {!user ? (
-          <div className="flex flex-col items-center gap-3 bg-bg p-6 text-center">
-            <p className="text-[14.5px] text-muted">
-              Đăng nhập để trò chuyện với trợ lý và lưu lại lịch sử tư vấn của bạn.
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-bg p-7 text-center">
+            <span className="grid h-14 w-14 place-items-center rounded-2xl bg-jade/10 text-jade">
+              <BotIcon className="h-8 w-8" />
+            </span>
+            <p className="text-sm text-muted">
+              Đăng nhập để trò chuyện và lưu lại lịch sử tư vấn của bạn.
             </p>
-            <Link to="/login" className="btn-teal !py-2.5 text-[14px]" onClick={() => setOpen(false)}>
+            <Link to="/login" className="btn-teal !py-2.5 text-sm" onClick={() => setOpen(false)}>
               Đăng nhập
             </Link>
           </div>
         ) : (
-          <>
-            <div className="flex min-h-[220px] flex-1 flex-col gap-2.5 overflow-y-auto bg-bg p-4">
-              {messages.length === 0 && !typing && (
-                <div className="max-w-[88%] rounded-[14px] rounded-bl-[4px] border border-line bg-white px-[13px] py-2.5 text-[13.5px] text-ink">
-                  Xin chào {user.name} 👋 Mình có thể tư vấn giá, lịch trình và cách đặt tour. Bạn muốn
-                  hỏi gì?
-                </div>
-              )}
-
-              {messages.map((m, i) =>
-                m.role === 'user' ? (
-                  <div key={i} className="self-end">
-                    <div className="max-w-[300px] rounded-[14px] rounded-br-[4px] bg-teal px-[13px] py-2.5 text-[13.5px] text-white">
-                      {m.content}
-                    </div>
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            {historyOpen && (
+              <div className="absolute inset-0 z-10 flex min-h-0 flex-col bg-[#FBFAF6]">
+                <div className="flex items-center justify-between border-b border-line bg-white px-4 py-3 shadow-[0_5px_18px_-16px_rgba(13,74,69,0.65)]">
+                  <div>
+                    <p className="font-heading text-[15px] font-semibold text-teal">Lịch sử trò chuyện</p>
+                    <p className="text-[11.5px] text-muted">Chọn để tiếp tục nơi bạn đã dừng</p>
                   </div>
-                ) : (
-                  <div key={i} className="flex max-w-[88%] flex-col gap-2">
-                    <div
-                      className={`rounded-[14px] rounded-bl-[4px] border px-[13px] py-2.5 text-[13.5px] whitespace-pre-wrap ${
-                        m.loi ? 'border-coral/40 bg-coral/5 text-coralD' : 'border-line bg-white text-ink'
-                      }`}
-                      dangerouslySetInnerHTML={formatMarkdown(m.content)}
-                    />
-                    {/* Tour gợi ý — card bấm được, sang trang chi tiết */}
-                    {m.suggestedTours?.length > 0 &&
-                      m.suggestedTours.map((t) => (
-                        <button
-                          key={t._id}
-                          type="button"
-                          onClick={() => {
-                            setOpen(false)
-                            navigate(`/tour/${t._id}`)
-                          }}
-                          className="flex items-center gap-2.5 rounded-[12px] border border-line bg-white p-2 text-left transition hover:border-jade"
-                        >
-                          {t.image ? (
-                            <img src={t.image} alt="" className="h-[42px] w-[58px] rounded-[8px] object-cover" />
-                          ) : (
-                            <span className="grid h-[42px] w-[58px] place-items-center rounded-[8px] bg-sand text-muted">✦</span>
-                          )}
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[13px] font-semibold text-ink">{t.title}</span>
-                            <span className="block text-[12.5px] font-semibold text-coralD">
-                              {formatPrice(t.price)}
-                            </span>
-                          </span>
-                          <span className="text-muted">›</span>
-                        </button>
-                      ))}
-                  </div>
-                )
-              )}
-
-              {/* Trạng thái đang gõ */}
-              {typing && (
-                <div className="flex w-[64px] items-center justify-center gap-1 rounded-[14px] rounded-bl-[4px] border border-line bg-white px-3 py-3">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:0ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:120ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:240ms]" />
+                  <button
+                    type="button"
+                    onClick={() => setHistoryOpen(false)}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-sand"
+                    aria-label="Đóng lịch sử"
+                  >
+                    <CloseIcon className="h-4 w-4" />
+                  </button>
                 </div>
-              )}
-              <div ref={cuoiDanhSach} />
-            </div>
-
-            {/* Ô nhập */}
-            <form onSubmit={gui} className="flex gap-2 border-t border-line bg-white p-3">
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                className="field-input flex-1 !py-2.5 text-sm"
-                placeholder={tourId ? 'Hỏi về tour đang xem…' : 'Nhập tin nhắn…'}
-                maxLength={1000}
-                aria-label="Nội dung chat"
-              />
-              <Button type="submit" variant="teal" className="!px-4 !py-2 text-[16px]" disabled={typing || !input.trim()} aria-label="Gửi">
-                ➜
-              </Button>
-            </form>
-          </>
+                <ConversationList
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelect={chooseConversation}
+                  onCreate={newChat}
+                  loading={loadingConversations}
+                  hasMore={conversationPagination.hasMore}
+                  loadingMore={loadingMoreConversations}
+                  onLoadMore={loadMoreConversations}
+                  creating={creatingConversation}
+                  showCreate
+                  historyPanel
+                  className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-[#FBFAF6] p-3"
+                />
+              </div>
+            )}
+            <ChatSurface compact onNavigate={() => setOpen(false)} />
+          </div>
         )}
-      </div>
 
-      {/* Nút nổi mở chat */}
+        <Link
+          to="/ai-assistant"
+          onClick={() => setOpen(false)}
+          className="flex shrink-0 items-center justify-center gap-1.5 border-t border-line bg-white px-4 py-3 text-[13px] font-semibold text-jade transition hover:bg-bg hover:text-teal"
+        >
+          Mở trợ lý đầy đủ <ArrowUpRightIcon />
+        </Link>
+      </section>
+
       <button
-        onClick={() => setOpen((v) => !v)}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
         aria-label="Trợ lý AI"
+        aria-expanded={open}
         title="Trợ lý AI"
-        className="grid h-[60px] w-[60px] place-items-center rounded-full bg-coral text-[24px] text-white shadow-float transition hover:scale-105"
+        className="grid h-12 w-12 place-items-center rounded-full bg-coral text-white shadow-float transition hover:-translate-y-0.5 hover:scale-105 hover:bg-coralD focus:outline-none focus:ring-4 focus:ring-coral/20"
       >
-        💬
+        <BotIcon className="h-7 w-7" />
       </button>
     </>
   )

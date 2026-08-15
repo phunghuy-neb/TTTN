@@ -30,10 +30,20 @@ async function pingAi(url) {
       signal: controller.signal,
       headers: { 'x-internal-api-key': String(process.env.AI_SERVICE_API_KEY || '') },
     })
+    if (!response.ok) {
+      clearTimeout(henGio)
+      return { status: 'offline', health: null }
+    }
+    let health = null
+    try {
+      health = await response.json()
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+    }
     clearTimeout(henGio)
-    return response.ok ? 'online' : 'offline'
+    return { status: 'online', health }
   } catch {
-    return 'offline'
+    return { status: 'offline', health: null }
   }
 }
 
@@ -46,8 +56,8 @@ export const getAiSettings = async (req, res) => {
   try {
     const url = (process.env.AI_SERVICE_URL || '').trim()
 
-    const [status, chatEnabled, totalMessages, uniqueUsers] = await Promise.all([
-      url ? pingAi(url) : Promise.resolve('not_configured'),
+    const [serviceHealth, chatEnabled, totalMessages, uniqueUsers] = await Promise.all([
+      url ? pingAi(url) : Promise.resolve({ status: 'not_configured', health: null }),
       Setting.layGiaTri('chatEnabled', true),
       ChatMessage.countDocuments(),
       ChatMessage.distinct('userId').then((ds) => ds.length),
@@ -56,7 +66,10 @@ export const getAiSettings = async (req, res) => {
     res.json({
       success: true,
       aiServiceUrl: cheUrl(url),
-      status,
+      status: serviceHealth.status,
+      capabilityStatus: serviceHealth.health?.status || null,
+      capabilities: serviceHealth.health?.capabilities || null,
+      indexReconciliation: serviceHealth.health?.reconciliation || null,
       chatEnabled: chatEnabled !== false,
       totalMessages,
       uniqueUsers,

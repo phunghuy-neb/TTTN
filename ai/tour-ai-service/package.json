@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "node src/server.js",
+    "test": "node --test test/*.test.js",
     "test:gemini": "node src/scripts/testGemini.js",
     "sync:vectors": "node src/scripts/syncTourVectors.js",
     "query:test": "node src/scripts/testQuery.js",

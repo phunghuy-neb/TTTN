@@ -8,6 +8,7 @@ import { ToastProvider } from './components/ui/Toast.jsx'
 import Layout from './components/Layout.jsx'
 import { FavoritesProvider } from './context/FavoritesContext.jsx'
 import { NotificationsProvider } from './context/NotificationsContext.jsx'
+import { ChatProvider } from './context/ChatContext.jsx'
 
 // Tách bundle theo route, đặc biệt tách Recharts/admin khỏi bundle khách hàng.
 const AdminLayout = lazy(() => import('./layouts/AdminLayout.jsx'))
@@ -39,6 +40,7 @@ const AdminUsers = lazy(() => import('./pages/admin/Users.jsx'))
 const AdminAiSettings = lazy(() => import('./pages/admin/AiSettings.jsx'))
 const Forbidden = lazy(() => import('./pages/Forbidden.jsx'))
 const NotFound = lazy(() => import('./pages/NotFound.jsx'))
+const AiAssistant = lazy(() => import('./pages/AiAssistant.jsx'))
 
 export default function App() {
   return (
@@ -47,6 +49,7 @@ export default function App() {
         <BrowserRouter>
           <FavoritesProvider>
             <NotificationsProvider>
+              <ChatProvider>
               <ToastProvider>
             <Suspense fallback={<div className="wrap py-16 text-center text-muted">Đang tải trang…</div>}>
               <Routes>
@@ -74,6 +77,7 @@ export default function App() {
                   <Route path="favorites" element={<Favorites />} />
                   <Route path="notifications" element={<Notifications />} />
                   <Route path="tickets/:bookingId" element={<Ticket />} />
+                  <Route path="ai-assistant" element={<AiAssistant />} />
                 </Route>
 
                 <Route path="403" element={<Forbidden />} />
@@ -103,6 +107,7 @@ export default function App() {
               </Routes>
             </Suspense>
               </ToastProvider>
+              </ChatProvider>
             </NotificationsProvider>
           </FavoritesProvider>
         </BrowserRouter>

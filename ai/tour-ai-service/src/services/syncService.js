@@ -2,6 +2,7 @@ const Tour = require("../models/Tour");
 const { chunkTour } = require("../utils/tourChunking");
 const { embedBatch } = require("../config/gemini");
 const { getTourCollection } = require("../config/chroma");
+const { inspectIndexIntegrity } = require("./indexIntegrityService");
 
 /**
  * Logic đồng bộ vector (Tuần 2), tách thành service dùng chung để:
@@ -16,25 +17,49 @@ const { getTourCollection } = require("../config/chroma");
  *  4. Upsert (id, vector, nội dung gốc, metadata) vào ChromaDB.
  *  5. Cập nhật lại tour.vectorSync trong MongoDB.
  */
-async function syncTourVectors({ force = false } = {}) {
-  const query = force
-    ? { status: "published", isActive: { $ne: false } }
-    : { status: "published", isActive: { $ne: false }, "vectorSync.isSynced": { $ne: true } };
+async function syncTourVectors({
+  force = false,
+  tourIds = null,
+  dependencies = {},
+} = {}) {
+  const TourModel = dependencies.TourModel || Tour;
+  const getCollection = dependencies.getCollection || getTourCollection;
+  const embed = dependencies.embedBatch || embedBatch;
+  const chunker = dependencies.chunkTour || chunkTour;
+  const query = {
+    status: "published",
+    isActive: { $ne: false },
+    ...(tourIds?.length ? { _id: { $in: tourIds } } : {}),
+  };
 
-  const tours = await Tour.find(query).lean();
-  const collection = await getTourCollection();
+  const allTours = await TourModel.find(query).lean();
+  const collection = await getCollection();
+  const existing = await collection.get({ include: ["metadatas"] });
+  const existingIds = new Set((existing?.ids || []).map(String));
+  const tours = force || tourIds?.length
+    ? allTours
+    : allTours.filter((tour) => {
+      if (tour.vectorSync?.isSynced !== true) return true;
+      return chunker(tour).some((chunk) => !existingIds.has(String(chunk.id)));
+    });
 
-  const result = { total: tours.length, success: 0, failed: 0, details: [] };
+  const result = {
+    total: tours.length,
+    inspected: allTours.length,
+    success: 0,
+    failed: 0,
+    details: [],
+  };
 
   for (const tour of tours) {
     try {
-      const chunks = chunkTour(tour);
+      const chunks = chunker(tour);
       if (!chunks.length) {
         result.details.push({ tourId: String(tour._id), status: "skipped", reason: "no chunks" });
         continue;
       }
 
-      const vectors = await embedBatch(chunks.map((c) => c.text));
+      const vectors = await embed(chunks.map((c) => c.text));
 
       await collection.upsert({
         ids: chunks.map((c) => c.id),
@@ -43,7 +68,7 @@ async function syncTourVectors({ force = false } = {}) {
         metadatas: chunks.map((c) => c.metadata),
       });
 
-      await Tour.updateOne(
+      await TourModel.updateOne(
         { _id: tour._id },
         {
           $set: {
@@ -70,4 +95,25 @@ async function syncTourVectors({ force = false } = {}) {
   return result;
 }
 
-module.exports = { syncTourVectors };
+async function reconcileTourIndex({ repair = true, dependencies = {} } = {}) {
+  const inspectionDependencies = {
+    TourModel: dependencies.TourModel || Tour,
+    getCollection: dependencies.getCollection || getTourCollection,
+    chunker: dependencies.chunkTour || chunkTour,
+  };
+  const before = await inspectIndexIntegrity(inspectionDependencies);
+  let recovery = null;
+  if (repair && before.reconciliation.repairable && before.reconciliation.needed) {
+    const repairIds = [...new Set([
+      ...before.reconciliation.missingTourIds,
+      ...before.reconciliation.unsyncedTourIds,
+    ])];
+    recovery = repairIds.length
+      ? await syncTourVectors({ tourIds: repairIds, dependencies })
+      : { total: 0, inspected: 0, success: 0, failed: 0, details: [] };
+  }
+  const after = recovery ? await inspectIndexIntegrity(inspectionDependencies) : before;
+  return { before, recovery, after };
+}
+
+module.exports = { syncTourVectors, reconcileTourIndex };

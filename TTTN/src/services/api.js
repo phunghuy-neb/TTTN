@@ -2,6 +2,7 @@
 // Base URL lấy từ biến môi trường Vite (.env)
 
 import { emitSessionExpired } from './authEvents.js'
+import { normalizeApiError } from './apiError.js'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL
 
@@ -67,12 +68,7 @@ export async function request(path, { method = 'GET', body, auth = false } = {})
     }
 
     if (!res.ok) {
-      return {
-        success: false,
-        message: data.message || 'Có lỗi xảy ra.',
-        code: data.code || 'REQUEST_ERROR',
-        status: res.status,
-      }
+      return normalizeApiError(data, res.status, res.headers.get('x-request-id'))
     }
 
     // Trả nguyên response; AuthContext chỉ lưu user, không lưu token.

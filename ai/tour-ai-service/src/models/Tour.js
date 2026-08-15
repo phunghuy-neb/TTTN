@@ -30,8 +30,11 @@ const DepartureSchema = new Schema(
 const ReviewSchema = new Schema(
   {
     user: { type: Schema.Types.ObjectId, ref: "User" },
+    booking: { type: Schema.Types.ObjectId, ref: "Booking", default: null },
     rating: { type: Number, min: 1, max: 5 },
     comment: { type: String },
+    images: [{ type: String }],
+    isVisible: { type: Boolean, default: true },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -59,15 +62,18 @@ const TourSchema = new Schema(
     },
     summary: { type: String, default: "" },
     description: { type: String, default: "" }, // nguồn chính để sinh embedding
-    inclusions: { type: String, default: "" },
-    exclusions: { type: String, default: "" },
+    inclusions: [{ type: String }],
+    exclusions: [{ type: String }],
     days: { type: Number, required: true },
     basePrice: { type: Number, required: true },
     oldPrice: { type: Number, default: null },
+    promotionLabel: { type: String, default: "" },
     departures: [DepartureSchema],
     itinerary: [ItineraryDaySchema],
     tags: [{ type: String }],
+    searchText: { type: String, default: "" },
     images: [{ type: String }],
+    highlights: [{ type: String }],
     cancellationPolicy: { type: String, default: "" },
     reviews: [ReviewSchema],
     avgRating: { type: Number, default: 0 },

@@ -11,13 +11,21 @@ export function securityHeaders(req, res, next) {
 
 // Rate limiter bộ nhớ phù hợp một instance. Khi scale nhiều instance nên thay
 // store bằng Redis để giới hạn được chia sẻ toàn cụm.
-export function rateLimit({ windowMs = 15 * 60_000, max = 300, prefix = 'global', skip } = {}) {
+export function rateLimit({
+  windowMs = 15 * 60_000,
+  max = 300,
+  prefix = 'global',
+  skip,
+  keyGenerator,
+  code = 'RATE_LIMITED',
+} = {}) {
   const store = new Map()
   stores.add(store)
   return (req, res, next) => {
     if (skip?.(req)) return next()
     const now = Date.now()
-    const key = `${prefix}:${req.ip}`
+    const identity = String(keyGenerator?.(req) || req.ip || 'unknown')
+    const key = `${prefix}:${identity}`
     let record = store.get(key)
     if (!record || record.resetAt <= now) record = { count: 0, resetAt: now + windowMs }
     record.count += 1
@@ -27,7 +35,7 @@ export function rateLimit({ windowMs = 15 * 60_000, max = 300, prefix = 'global'
     res.setHeader('RateLimit-Reset', String(Math.ceil(record.resetAt / 1000)))
     if (record.count > max) {
       res.setHeader('Retry-After', String(Math.ceil((record.resetAt - now) / 1000)))
-      return res.status(429).json({ success: false, message: 'Bạn thao tác quá nhanh. Vui lòng thử lại sau.', code: 'RATE_LIMITED' })
+      return res.status(429).json({ success: false, message: 'Bạn thao tác quá nhanh. Vui lòng thử lại sau.', code })
     }
     next()
   }

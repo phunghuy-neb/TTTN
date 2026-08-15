@@ -54,7 +54,8 @@ app.use(rateLimit({
   max: Number(process.env.RATE_LIMIT_MAX) || 300,
   // IPN đến từ IP dùng chung của cổng; giới hạn theo IP có thể làm rơi
   // callback hợp lệ. Các route này vẫn chỉ chấp nhận payload có HMAC đúng.
-  skip: (req) => ['/api/payments/vnpay/ipn', '/api/payments/momo/ipn'].includes(req.path),
+  skip: (req) => req.path.startsWith('/api/chat')
+    || ['/api/payments/vnpay/ipn', '/api/payments/momo/ipn'].includes(req.path),
 }))
 
 // Parse JSON body từ request
