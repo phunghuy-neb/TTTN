@@ -88,9 +88,10 @@ test("stress table: relative dates resolve in Asia/Ho_Chi_Minh (22 cases)", () =
 
 test("stress table: date continuation and date-vs-duration separation (8 cases)", () => {
   const previous = { start: "2026-09-25", end: "2026-09-25", label: "25/9/2026" };
-  for (const [message, expected] of [["25 thì sao?", "2026-09-25"], ["27 thì sao?", "2026-09-27"], ["27", "2026-09-27"]]) {
+  for (const [message, expected] of [["25 thì sao?", "2026-09-25"], ["27 thì sao?", "2026-09-27"]]) {
     assert.equal(parseDateConstraint(message, previous, NOW)?.start, expected, message);
   }
+  assert.equal(parseDateConstraint("27", previous, NOW), null);
   for (const message of ["3 ngày nữa", "5 ngày nữa", "10 ngày nữa", "Hôm nay bạn khỏe không?", "Xin chào, hôm nay bạn khỏe không?"]) {
     assert.equal(extractConstraintDelta(message, {}, NOW).days, undefined, message);
   }

@@ -5,7 +5,7 @@ const {
   buildRecommendationReply,
   shouldClarifyRecommendationWithPreferences,
 } = require('../src/services/travelAdvisorService');
-const { filterAndRankHydratedTours } = require('../src/services/ragService');
+const { filterAndRankHydratedTours, preferenceScore } = require('../src/services/ragService');
 const { generateChatAnswer } = require('../src/services/chatService');
 const { extractConstraintDelta, mergeConstraintState } = require('../src/services/travelAdvisorService');
 
@@ -140,4 +140,22 @@ test('current pace constraint override saved relaxed preference trong ranking v�
   const items = buildRecommendationItems(ranked, state, new Date('2026-08-13T00:00:00Z'), { ...PROFILE, pace: 'relaxed' });
   assert.match(items[0].currentConstraintReasons.join(' '), /năng động|khám phá/i);
   assert.doesNotMatch(items[0].savedPreferenceReasons.join(' '), /nhẹ nhàng|nghỉ dưỡng/i);
+});
+
+test('hard exclusion hiện tại suppress saved preference xung đột và destination analogy', () => {
+  const state = mergeConstraintState({}, extractConstraintDelta('không biển'));
+  const inlandTour = tour({
+    _id: IDS.mountain,
+    name: 'Ninh Bình - Tràng An',
+    location: 'Ninh Bình',
+    region: 'Miền Bắc',
+    tags: ['di sản', 'văn hóa'],
+    highlights: ['Tràng An'],
+    summary: 'Cảnh quan đá vôi được ví như Hạ Long trên cạn.',
+  });
+  const preferences = { ...PROFILE, preferredDestinations: ['Hạ Long'] };
+
+  assert.equal(preferenceScore(inlandTour, preferences, state), 0);
+  const items = buildRecommendationItems([inlandTour], state, new Date('2026-08-13T00:00:00Z'), preferences);
+  assert.doesNotMatch(items[0].savedPreferenceReasons.join(' '), /biển|Hạ Long/i);
 });

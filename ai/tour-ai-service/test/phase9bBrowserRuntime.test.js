@@ -248,6 +248,47 @@ test('browser path understands colloquial constraints and keeps text/cards consi
   assert.doesNotMatch(result.reply, /chưa thể trả lời chắc chắn câu hỏi chung/i);
 });
 
+test('ng traveler abbreviation persists into total price and availability follow-ups', async () => {
+  const runtime = createBrowserRuntime();
+  const list = await runtime.post(payload('2 ng muốn đi 3 ngày, tổng 11 triệu', 1));
+  assert.equal(list.constraintState.travelers, 2);
+
+  const selected = await runtime.post(payload('cái đầu?', 2));
+  const price = await runtime.post(payload('giá tổng?', 3));
+  assert.equal(price.structuredContent.partySize, 2);
+  assert.match(price.reply, /cho 2 người/);
+
+  const availability = await runtime.post(payload('còn đủ 2 ng ngày 20/9 không?', 4));
+  assert.equal(availability.structuredContent.departures[0].partySize, 2);
+  assert.equal(selected.entityState.selectedTourId, availability.structuredContent.tourId);
+});
+
+test('approximate total budget labels a materially cheaper tour as below the target', async () => {
+  const runtime = createBrowserRuntime();
+  const result = await runtime.post(payload('gợi ý tour Đà Lạt khoảng 12 triệu tổng cho 2 người'));
+
+  assert.deepEqual(result.referencedTourIds, [IDS.daLat]);
+  assert.match(result.reply, /tổng giá ước tính 6\.800\.000đ cho 2 người thấp hơn mốc khoảng 12\.000\.000đ/i);
+  assert.doesNotMatch(result.reply, /6\.800\.000đ cho 2 người cao hơn mốc/i);
+});
+
+test('approximate total budget keeps the above-target label for a materially dearer tour', async () => {
+  const runtime = createBrowserRuntime();
+  const result = await runtime.post(payload('gợi ý tour Đà Lạt khoảng 8 triệu tổng cho 3 người'));
+
+  assert.deepEqual(result.referencedTourIds, [IDS.daLat]);
+  assert.match(result.reply, /tổng giá ước tính 10\.200\.000đ cho 3 người cao hơn mốc khoảng 8\.000\.000đ/i);
+});
+
+test('approximate total budget does not emit a trade-off inside the matching tolerance', async () => {
+  const runtime = createBrowserRuntime();
+  const result = await runtime.post(payload('gợi ý tour Đà Lạt khoảng 7 triệu tổng cho 2 người'));
+
+  assert.deepEqual(result.referencedTourIds, [IDS.daLat]);
+  assert.match(result.reply, /mức giá tương thích với ngân sách khoảng 7\.000\.000đ cho 2 người/i);
+  assert.doesNotMatch(result.reply, /(?:cao hơn|thấp hơn) mốc khoảng/i);
+});
+
 test('browser multi-turn constraint updates are not hijacked by booking and affect ranking', async () => {
   const runtime = createBrowserRuntime();
   await runtime.post(payload('gợi ý cho tôi tour khoảng 8 triệu cho 2 người, đi đâu cũng được', 1));
@@ -291,6 +332,77 @@ test('browser candidate lifecycle resolves ordinal, anaphora and party rehydrati
   assert.equal(changedParty.structuredContent.facts[0].departures[0].partySize, 4);
 });
 
+test('bare price follow-up keeps a selected tour that survives a party-size rerank', async () => {
+  const runtime = createBrowserRuntime();
+  const list = await runtime.post(payload('gợi ý tour tối đa 5 triệu mỗi người cho 2 người', 1));
+  const expectedSecond = list.candidateList.tourIds[1];
+
+  const selected = await runtime.post(payload('cái thứ 2?', 2));
+  assert.deepEqual(selected.referencedTourIds, [expectedSecond]);
+  assert.equal(selected.entityState.selectedTourId, expectedSecond);
+
+  const reranked = await runtime.post(payload('đổi thành 3 người', 3));
+  assert.equal(reranked.decision.action, 'SEARCH');
+  assert.ok(reranked.candidateList.tourIds.includes(expectedSecond));
+
+  const total = await runtime.post(payload('giá tổng giờ?', 4));
+  assert.equal(total.decision.action, 'ANSWER');
+  assert.equal(total.decision.operation, 'tour_detail');
+  assert.deepEqual(total.referencedTourIds, [expectedSecond]);
+  assert.equal(total.structuredContent.requestedFact, 'price_total');
+  assert.equal(total.structuredContent.partySize, 3);
+});
+
+test('previous-choice wording returns to the prior selected tour after a later ordinal switch', async () => {
+  const runtime = createBrowserRuntime();
+  const list = await runtime.post(payload('gợi ý tour tối đa 5 triệu mỗi người', 1));
+  const secondId = list.candidateList.tourIds[1];
+  const thirdId = list.candidateList.tourIds[2];
+
+  await runtime.post(payload('cái thứ 2?', 2));
+  const third = await runtime.post(payload('cái thứ 3?', 3));
+  assert.equal(third.entityState.selectedTourId, thirdId);
+
+  const previous = await runtime.post(payload('thôi cái trước', 4));
+  assert.equal(previous.decision.action, 'ANSWER');
+  assert.equal(previous.decision.operation, 'tour_detail');
+  assert.deepEqual(previous.referencedTourIds, [secondId]);
+  assert.equal(previous.entityState.selectedTourId, secondId);
+  assert.equal(previous.entityState.previousSelectedTourId, thirdId);
+});
+
+test('bare facts follow an explicit single-tour focus outside the active candidate list', async () => {
+  const runtime = createBrowserRuntime();
+  const list = await runtime.post(payload('gợi ý tour tối đa 5 triệu mỗi người cho 2 người', 1));
+  assert.ok(!list.candidateList.tourIds.includes(IDS.singapore));
+
+  const explicit = await runtime.post(payload('tour Singapore giá bao nhiêu?', 2));
+  assert.deepEqual(explicit.referencedTourIds, [IDS.singapore]);
+  assert.equal(explicit.entityState.selectedTourId, IDS.singapore);
+
+  const total = await runtime.post(payload('giá tổng?', 3));
+  assert.equal(total.decision.action, 'ANSWER');
+  assert.deepEqual(total.referencedTourIds, [IDS.singapore]);
+  assert.equal(total.structuredContent.requestedFact, 'price_total');
+  assert.equal(total.structuredContent.partySize, 2);
+});
+
+test('bare availability keeps an explicit tour focus after a party rerank drops it from the active list', async () => {
+  const runtime = createBrowserRuntime();
+  await runtime.post(payload('gợi ý tour tối đa 5 triệu mỗi người cho 2 người', 1));
+  const explicit = await runtime.post(payload('tour Singapore giá bao nhiêu?', 2));
+  assert.deepEqual(explicit.referencedTourIds, [IDS.singapore]);
+
+  const reranked = await runtime.post(payload('đổi thành 3 người', 3));
+  assert.ok(!reranked.candidateList.tourIds.includes(IDS.singapore));
+  assert.equal(reranked.entityState.focusedTourId, IDS.singapore);
+
+  const availability = await runtime.post(payload('còn chỗ tuần sau không', 4));
+  assert.equal(availability.decision.action, 'ANSWER');
+  assert.deepEqual(availability.referencedTourIds, [IDS.singapore]);
+  assert.equal(availability.constraintState.travelers, 3);
+});
+
 test('criteria update remains recommendation routing rather than booking', async () => {
   const runtime = createBrowserRuntime();
   await runtime.post(payload('gợi ý tour cho 2 người', 1));
@@ -318,6 +430,62 @@ test('alternative lists exclude the active result set and historical references 
   const anaphora = await runtime.post(payload('tour đó còn chỗ không và chính sách hủy thế nào?', 4));
   assert.deepEqual(anaphora.referencedTourIds, [first.candidateList.tourIds[1]]);
   assert.deepEqual(anaphora.structuredContent.requestedFacts, ['availability', 'cancellation_policy']);
+});
+
+test('mixed budget update with colloquial list khác still excludes the active result set', async () => {
+  const runtime = createBrowserRuntime();
+  const first = await runtime.post(payload('gợi ý tour tối đa 5 triệu mỗi người', 1));
+  const second = await runtime.post(payload('tăng lên 6 triệu rồi cho list khác', 2));
+
+  assert.equal(second.decision.operation, 'recommendation_alternative');
+  assert.ok(second.candidateList);
+  assert.ok(second.candidateList.tourIds.every((id) => !first.candidateList.tourIds.includes(id)));
+});
+
+test('rejecting the current plural candidate set requests alternatives instead of entity clarification', async () => {
+  const runtime = createBrowserRuntime();
+  const first = await runtime.post(payload('gợi ý tour cho 2 người', 1));
+  const second = await runtime.post(payload('không thích mấy cái này', 2));
+
+  assert.equal(second.decision.action, 'SEARCH');
+  assert.equal(second.decision.operation, 'recommendation_alternative');
+  assert.ok(second.candidateList);
+  assert.ok(second.candidateList.tourIds.every((id) => !first.candidateList.tourIds.includes(id)));
+  assert.equal(second.entityState.pendingClarification, null);
+});
+
+test('consecutive plural rejections do not resurrect candidate lists the user already rejected', async () => {
+  const runtime = createBrowserRuntime();
+  const first = await runtime.post(payload('gợi ý tour cho 2 người', 1));
+  const second = await runtime.post(payload('không thích mấy cái này', 2));
+  const third = await runtime.post(payload('mấy tour này không hợp', 3));
+  const rejectedIds = new Set([...first.candidateList.tourIds, ...second.candidateList.tourIds]);
+
+  assert.equal(third.decision.action, 'SEARCH');
+  assert.equal(third.decision.operation, 'recommendation_alternative');
+  if (third.candidateList) {
+    assert.ok(third.candidateList.tourIds.every((id) => !rejectedIds.has(id)));
+  } else {
+    assert.equal(third.outcome.code, 'NO_RESULTS');
+  }
+});
+
+test('historical comparison wording compares the current and previous selected tours', async () => {
+  const runtime = createBrowserRuntime();
+  const first = await runtime.post(payload('gợi ý tour tối đa 5 triệu mỗi người', 1));
+  const previous = await runtime.post(payload('cái thứ 2?', 2));
+  const alternatives = await runtime.post(payload('cho tôi danh sách khác', 3));
+  const current = await runtime.post(payload('cái cuối?', 4));
+  const comparison = await runtime.post(payload('so với cái lúc nãy thì sao', 5));
+
+  assert.equal(comparison.decision.action, 'ANSWER');
+  assert.equal(comparison.structuredContent.type, 'comparison');
+  assert.deepEqual(
+    new Set(comparison.referencedTourIds),
+    new Set([current.entityState.selectedTourId, previous.entityState.selectedTourId]),
+  );
+  assert.ok(alternatives.candidateList.tourIds.includes(current.entityState.selectedTourId));
+  assert.ok(first.candidateList.tourIds.includes(previous.entityState.selectedTourId));
 });
 
 test('embedded historical ordinal clears stale entity clarification and resumes the fact request', async () => {
@@ -387,4 +555,33 @@ test('zero-result copy and recommendation evidence stay natural and factual', as
     assert.ok(item.reasons.every((reason) => !/khớp chủ đề biển/i.test(reason)));
   }
   assert.ok(result.structuredContent.tours.some((item) => item.reasons.some((reason) => /3 ngày/.test(reason))));
+});
+
+test('an unresolved tour pronoun after zero results stays a clarification', async () => {
+  const runtime = createBrowserRuntime();
+  const zero = await runtime.post(payload('cuối tuần sau muốn đổi gió 3 hôm, 2 ng, tổng 9 củ, ko biển nha', 1));
+  assert.equal(zero.outcome.code, 'NO_RESULTS');
+
+  const ordinal = await runtime.post(payload('cái đầu?', 2));
+  assert.equal(ordinal.decision.action, 'CLARIFY');
+  assert.deepEqual(ordinal.referencedTourIds, []);
+
+  const suitability = await runtime.post(payload('tour này hợp người ngại leo nhiều ko, nói gọn thôi', 3));
+  assert.equal(suitability.decision.action, 'CLARIFY');
+  assert.equal(suitability.decision.reason, 'tour_entity_ambiguous');
+  assert.deepEqual(suitability.referencedTourIds, []);
+  assert.equal(suitability.candidateList, null);
+  assert.match(suitability.reply, /chưa xác định được tour/i);
+});
+
+test('an itinerary-by-day formatting request without a tour asks for the tour', async () => {
+  const runtime = createBrowserRuntime();
+  await runtime.post(payload('2 ng, tổng 9tr, ko biển nha', 1));
+
+  const result = await runtime.post(payload('tóm tắt từng ngày, xuống dòng giúp mình', 2));
+  assert.equal(result.decision.action, 'CLARIFY');
+  assert.equal(result.decision.reason, 'tour_entity_ambiguous');
+  assert.match(result.reply, /chưa xác định (?:được|chắc) tour/i);
+  assert.equal(result.constraintState.travelers, 2);
+  assert.equal(result.constraintState.totalBudget, 9_000_000);
 });

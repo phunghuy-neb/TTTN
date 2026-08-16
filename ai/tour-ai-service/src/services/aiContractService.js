@@ -1,9 +1,14 @@
 const AI_CHAT_CONTRACT_VERSION = 1;
+const {
+  PROVIDER_FAILURE_CLASSES,
+  classifyProviderError,
+} = require("./providerReliabilityService");
 
 const ERROR_CODES = Object.freeze({
   AI_UNAVAILABLE: "AI_UNAVAILABLE",
   AI_RESPONSE_INVALID: "AI_RESPONSE_INVALID",
   AI_PROVIDER_UNAVAILABLE: "AI_PROVIDER_UNAVAILABLE",
+  AI_PROVIDER_QUOTA_EXHAUSTED: "AI_PROVIDER_QUOTA_EXHAUSTED",
   AI_PROVIDER_RATE_LIMITED: "AI_PROVIDER_RATE_LIMITED",
   RAG_DEGRADED: "RAG_DEGRADED",
   NO_RESULTS: "NO_RESULTS",
@@ -15,13 +20,19 @@ const ERROR_CODES = Object.freeze({
 });
 
 class AiServiceError extends Error {
-  constructor(code, message, { status = 500, source = "ai_service", retryable = false } = {}) {
+  constructor(code, message, {
+    status = 500,
+    source = "ai_service",
+    retryable = false,
+    providerMeta = null,
+  } = {}) {
     super(message || code);
     this.name = "AiServiceError";
     this.code = Object.values(ERROR_CODES).includes(code) ? code : ERROR_CODES.INTERNAL_ERROR;
     this.status = status;
     this.source = source;
     this.retryable = Boolean(retryable);
+    this.providerMeta = providerMeta && typeof providerMeta === "object" ? providerMeta : null;
   }
 }
 
@@ -50,11 +61,52 @@ function errorEnvelope(error) {
 }
 
 function providerError(error) {
-  const rateLimited = Number(error?.status) === 429;
+  const classified = classifyProviderError(error);
+  const providerMeta = error?.providerMeta && typeof error.providerMeta === "object"
+    ? error.providerMeta
+    : {
+      providerAttempted: true,
+      providerSucceeded: false,
+      attemptCount: 1,
+      maxAttempts: 1,
+      retryCount: 0,
+      retryDelaysMs: [],
+      failureClass: classified.failureClass,
+      retryable: classified.retryable,
+      httpStatus: classified.httpStatus,
+      providerErrorStatus: classified.providerStatus,
+      retryAfterMs: classified.retryAfterMs,
+      quotaMetric: classified.quotaMetric,
+      quotaId: classified.quotaId,
+      quotaLocation: classified.quotaLocation,
+      quotaModel: classified.quotaModel,
+      quotaValue: classified.quotaValue,
+    };
+  const failureClass = providerMeta.failureClass || classified.failureClass;
+  const code = failureClass === PROVIDER_FAILURE_CLASSES.QUOTA_EXHAUSTED
+    ? ERROR_CODES.AI_PROVIDER_QUOTA_EXHAUSTED
+    : failureClass === PROVIDER_FAILURE_CLASSES.RATE_LIMIT_TEMPORARY
+      ? ERROR_CODES.AI_PROVIDER_RATE_LIMITED
+      : failureClass === PROVIDER_FAILURE_CLASSES.VALIDATOR_REJECTION
+        ? ERROR_CODES.AI_RESPONSE_INVALID
+        : ERROR_CODES.AI_PROVIDER_UNAVAILABLE;
+  const status = code === ERROR_CODES.AI_RESPONSE_INVALID ? 502 : 503;
+  const message = code === ERROR_CODES.AI_PROVIDER_QUOTA_EXHAUSTED
+    ? "AI provider quota exhausted"
+    : code === ERROR_CODES.AI_PROVIDER_RATE_LIMITED
+      ? "AI provider rate limited"
+      : code === ERROR_CODES.AI_RESPONSE_INVALID
+        ? "AI provider response invalid"
+        : "AI provider unavailable";
   return new AiServiceError(
-    rateLimited ? ERROR_CODES.AI_PROVIDER_RATE_LIMITED : ERROR_CODES.AI_PROVIDER_UNAVAILABLE,
-    rateLimited ? "AI provider rate limited" : "AI provider unavailable",
-    { status: 503, source: "gemini", retryable: true }
+    code,
+    message,
+    {
+      status,
+      source: "gemini",
+      retryable: Boolean(providerMeta.retryable),
+      providerMeta,
+    }
   );
 }
 

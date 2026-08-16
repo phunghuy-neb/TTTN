@@ -10,8 +10,14 @@ const INTEREST_HINTS = {
   "nghi duong": ["nghỉ dưỡng", "resort", "thư giãn", "du thuyền", "biển", "đảo", "vịnh"],
   "kham pha": ["khám phá", "trải nghiệm", "động", "hang", "vườn quốc gia", "săn mây", "trekking"],
   "mao hiem": ["trekking", "leo núi", "mạo hiểm", "phiêu lưu", "săn mây", "Hang Múa"],
+  "leo nhieu": ["leo nhiều", "leo nhiều bậc", "leo núi", "trekking", "bậc đá", "bậc thang"],
   "van hoa": ["văn hóa", "di sản", "lịch sử", "phố cổ", "cố đô", "chùa", "cung điện"],
   "am thuc": ["ẩm thực", "cooking class", "hải sản", "bbq"],
+};
+
+const DIRECT_EXCLUSION_HINTS = {
+  bien: ["biển", "bãi biển", "ven biển", "tắm biển", "đảo", "vịnh", "san hô", "hải sản"],
+  "leo nhieu": ["leo nhiều", "leo nhiều bậc", "leo núi", "trekking", "bậc đá", "bậc thang"],
 };
 
 const AMBIGUOUS_ASCII_SINGLE_WORDS = new Set([
@@ -80,7 +86,7 @@ function conceptEvidenceText(haystack, value) {
     .trim();
 }
 
-function semanticInterestEvidence(haystack, value) {
+function semanticInterestEvidence(haystack, value, options = {}) {
   const evidenceText = conceptEvidenceText(haystack, value);
   const normalizedConcept = normalizeAscii(value);
   // A source that is itself unaccented can safely match the exact token
@@ -88,7 +94,10 @@ function semanticInterestEvidence(haystack, value) {
   if (normalizedConcept === "bien" && containsPhrase(normalizeEvidenceText(evidenceText), "bien")) {
     return { matched: true, value, matchedTerm: value };
   }
-  for (const hint of interestHints(value)) {
+  const hints = options.directOnly
+    ? DIRECT_EXCLUSION_HINTS[normalizedConcept] || interestHints(value)
+    : interestHints(value);
+  for (const hint of hints) {
     if (semanticPhraseMatch(evidenceText, hint)) return { matched: true, value, matchedTerm: hint };
   }
   return { matched: false, value, matchedTerm: null };
@@ -123,7 +132,7 @@ function collectTourConstraintEvidence(tour, constraints = {}) {
     interests: (constraints.interests || []).map((value) => semanticInterestEvidence(fullText, value)),
     exclusions: (constraints.exclusions || []).map((value) => {
       const evidence = interestExclusions.has(normalizeAscii(value))
-        ? semanticInterestEvidence(fullText, value)
+        ? semanticInterestEvidence(fullText, value, { directOnly: true })
         : semanticPhraseEvidence(destinationText, value);
       return { value, ...evidence };
     }),

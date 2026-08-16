@@ -56,6 +56,23 @@ function responseSummary(result = {}) {
   };
 }
 
+function skippedProviderTrace() {
+  return {
+    status: "skipped",
+    code: null,
+    providerAttempted: false,
+    providerSucceeded: false,
+    attemptCount: 0,
+    maxAttempts: 0,
+    retryCount: 0,
+    retryDelaysMs: [],
+    failureClass: null,
+    fallbackUsed: false,
+    finalComposer: "deterministic_renderer",
+    provenanceClass: "DETERMINISTIC_CONFIRMED",
+  };
+}
+
 function buildAiObservability({
   traceContext,
   previousSemanticState,
@@ -83,7 +100,7 @@ function buildAiObservability({
       pendingClarification: pendingClarification || null,
     },
     retrieval: ragTrace || { mode: "not_required", filters: {}, candidateIds: {}, ranking: [], grounding: [] },
-    provider: providerStatus || { status: "skipped", code: null, fallbackUsed: false },
+    provider: providerStatus || skippedProviderTrace(),
     validation: validationResult || { status: "not_required", reason: null },
     finalResponse: responseSummary(result),
   });

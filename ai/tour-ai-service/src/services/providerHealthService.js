@@ -1,3 +1,5 @@
+const { resolveGeminiProviderConfig } = require("../config/gemini");
+
 let runtime = {
   status: null,
   code: null,
@@ -24,7 +26,8 @@ function recordProviderFailure(code, now = new Date()) {
 }
 
 function providerCapabilitySnapshot() {
-  if (!process.env.GEMINI_API_KEY) {
+  const provider = resolveGeminiProviderConfig();
+  if (!provider.apiKey) {
     return {
       status: "not_configured",
       code: null,

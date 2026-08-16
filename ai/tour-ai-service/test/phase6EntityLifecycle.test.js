@@ -52,6 +52,21 @@ test('active candidate list resolves tour thu 2 to B', () => {
   assert.equal(resolved.candidateListId, LIST_1.candidateListId);
 });
 
+test('bare first-item references resolve the first active candidate', () => {
+  for (const message of ['cái đầu', 'tour đầu']) {
+    const resolved = resolveEntityIds({
+      message,
+      requestType: 'tour_detail',
+      entityState: {
+        candidateLists: [LIST_1],
+        activeCandidateListId: LIST_1.candidateListId,
+      },
+    });
+    assert.deepEqual(resolved.ids, [IDS.a], message);
+    assert.equal(resolved.candidateListId, LIST_1.candidateListId, message);
+  }
+});
+
 test('historical ordinal uses previous list and never silently selects E', () => {
   const resolved = resolveEntityIds({
     message: 'tour thứ 2 lúc nãy',
@@ -75,6 +90,71 @@ test('general grounded reply candidateList remains ordinal-referenceable', () =>
   assert.deepEqual(resolved.ids, [IDS.b]);
 });
 
+test('selected candidate list resolves an ordinal hidden by a later single-tour grounded list', () => {
+  const single = {
+    ...candidateList('candidates:0:3:turn-3', [IDS.b], 3),
+    source: 'grounded_answer',
+  };
+  const resolved = resolveEntityIds({
+    message: 'cái thứ 2 có gì nổi bật',
+    requestType: 'tour_detail',
+    entityState: {
+      candidateLists: [LIST_1, single],
+      activeCandidateListId: single.candidateListId,
+      selectedCandidateListId: LIST_1.candidateListId,
+      selectedTourId: IDS.b,
+      currentTourId: IDS.b,
+      lastSuggestedTourIds: [IDS.b],
+      lastReferencedTourIds: [IDS.b],
+    },
+  });
+
+  assert.deepEqual(resolved.ids, [IDS.b]);
+  assert.equal(resolved.candidateListId, LIST_1.candidateListId);
+  assert.equal(resolved.needsClarification, undefined);
+});
+
+test('out-of-range ordinal on the latest recommendation cannot resurrect a previous list', () => {
+  const singleRecommendation = candidateList('candidates:0:3:turn-3', [IDS.d], 3);
+  const resolved = resolveEntityIds({
+    message: 'cái thứ 2?',
+    requestType: 'tour_detail',
+    entityState: {
+      candidateLists: [LIST_1, singleRecommendation],
+      activeCandidateListId: singleRecommendation.candidateListId,
+      selectedCandidateListId: LIST_1.candidateListId,
+      selectedTourId: IDS.b,
+      currentTourId: IDS.b,
+      lastSuggestedTourIds: [IDS.d],
+      lastReferencedTourIds: [IDS.d],
+    },
+  });
+
+  assert.deepEqual(resolved.ids, []);
+  assert.equal(resolved.needsClarification, true);
+  assert.deepEqual(resolved.ambiguousIds, [IDS.d]);
+  assert.equal(resolved.candidateListId, singleRecommendation.candidateListId);
+});
+
+test('explicit previous-choice wording resolves the prior selected tour ID', () => {
+  const resolved = resolveEntityIds({
+    message: 'thôi cái trước',
+    requestType: 'tour_detail',
+    entityState: {
+      candidateLists: [LIST_1],
+      activeCandidateListId: LIST_1.candidateListId,
+      selectedTourId: IDS.c,
+      currentTourId: IDS.c,
+      previousSelectedTourId: IDS.b,
+      lastSuggestedTourIds: LIST_1.tourIds,
+      lastReferencedTourIds: [IDS.c],
+    },
+  });
+
+  assert.deepEqual(resolved.ids, [IDS.b]);
+  assert.equal(resolved.source, 'previous_selection');
+});
+
 test('serialized conversation state keeps ordinal behavior after restart', () => {
   const before = stateWithTwoLists();
   const afterRestart = JSON.parse(JSON.stringify(before));
@@ -91,6 +171,38 @@ test('old and new candidate lists coexist without overwriting identity', () => {
   assert.equal(memory.candidateLists.length, 2);
   assert.deepEqual(memory.candidateLists[0].tourIds, [IDS.a, IDS.b, IDS.c]);
   assert.deepEqual(memory.candidateLists[1].tourIds, [IDS.d, IDS.e, IDS.f]);
+});
+
+test('bare facts remain ambiguous when the old selected tour is absent from the active list', () => {
+  const resolved = resolveEntityIds({
+    message: 'giá tổng giờ?',
+    requestType: 'tour_detail',
+    entityState: {
+      ...stateWithTwoLists(),
+      selectedTourId: IDS.b,
+      currentTourId: IDS.b,
+      lastReferencedTourIds: LIST_2.tourIds,
+    },
+  });
+
+  assert.equal(resolved.needsClarification, true);
+  assert.deepEqual(resolved.ambiguousIds, LIST_2.tourIds);
+});
+
+test('a freshly focused single tour stays authoritative even when absent from the active list', () => {
+  const resolved = resolveEntityIds({
+    message: 'giá tổng?',
+    requestType: 'tour_detail',
+    entityState: {
+      ...stateWithTwoLists(),
+      selectedTourId: IDS.b,
+      currentTourId: IDS.b,
+      lastReferencedTourIds: [IDS.b],
+    },
+  });
+
+  assert.deepEqual(resolved.ids, [IDS.b]);
+  assert.equal(resolved.source, 'focused_selection');
 });
 
 test('stable entity ID rehydrates changed price and availability facts', () => {

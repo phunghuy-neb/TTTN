@@ -54,6 +54,10 @@ const DESTINATIONS = [
 
 const INTEREST_KEYWORDS = [
   { value: "biển", words: ["bien", "dao", "tam bien"] },
+  { value: "bơi", words: ["boi"] },
+  { value: "thuyền", words: ["du thuyen", "cheo thuyen", "thuyen"] },
+  { value: "kayak", words: ["cheo kayak", "kayak"] },
+  { value: "leo nhiều", words: ["leo nhieu bac", "leo nhieu"] },
   { value: "núi", words: ["nui", "trekking", "leo nui"] },
   { value: "nghỉ dưỡng", words: ["nghi duong", "resort", "thu gian"] },
   { value: "văn hóa", words: ["van hoa", "di san", "lich su"] },
@@ -69,8 +73,14 @@ function normalizeText(value) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/đ/g, "d")
+    .replace(/\bko\b/g, "khong")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function isCancellationPolicyQuestion(message) {
+  const normalized = normalizeText(message);
+  return /\b(?:chinh sach huy|phi huy|dieu kien huy|huy tour|huy (?:the nao|ra sao)|hoan (?:tien|tour))\b/.test(normalized);
 }
 
 function uniqueStrings(values = []) {
@@ -113,6 +123,7 @@ function semanticPrefixStart(text, start, pattern, lookBehind = 40) {
 
 function semanticBudgetCandidate(message, registry = null) {
   const normalized = normalizeText(message);
+  const rawMessage = String(message || "").toLowerCase().normalize("NFC");
   const candidates = [];
   const rangeRegex = new RegExp(`\\b(${NUMBER_TOKEN}(?:[.,]\\d+)?)\\s*(?:-|–|den|toi)\\s*(${NUMBER_TOKEN}(?:[.,]\\d+)?)\\s*(?:trieu|tr|cu)\\b`, "g");
   for (const match of globalMatches(normalized, rangeRegex)) {
@@ -168,6 +179,7 @@ function semanticBudgetCandidate(message, registry = null) {
     const start = match.index;
     const end = start + match[0].length;
     if (registry?.overlaps(start, end)) continue;
+    if (/\bdòng\b/u.test(rawMessage.slice(start, end))) continue;
     const amount = Number(match[1].replace(/[.,]/g, ""));
     const prefix = normalized.slice(Math.max(0, start - 30), start);
     const operator = /(?:it nhat|toi thieu|tu)\s*$/.test(prefix)
@@ -189,8 +201,8 @@ function semanticBudgetCandidate(message, registry = null) {
 
   if (!candidates.length) return null;
   const selected = candidates.sort((left, right) => left.start - right.start).at(-1);
-  const perPerson = /(?:\/\s*|moi\s+)(?:nguoi|khach)\b|\b(?:nguoi|khach)\s*\/\s*(?:tour|chuyen)\b/.test(normalized);
-  const total = /\b(?:tong|ca nhom|ca doan|ca gia dinh|cho ca hai|ca hai|cho ca \d{1,2})\b|\bcho\s+(?:gia dinh\s+)?(?:\d{1,2}|mot|hai|ba|bon|nam)\s*(?:nguoi|khach|dua)\b/.test(normalized);
+  const perPerson = /(?:\/\s*|moi\s+)(?:nguoi|ng|khach)\b|\b(?:nguoi|ng|khach)\s*\/\s*(?:tour|chuyen)\b/.test(normalized);
+  const total = /\b(?:tong|ca nhom|ca doan|ca gia dinh|cho ca hai|ca hai|cho ca \d{1,2})\b|\bcho\s+(?:gia dinh\s+)?(?:\d{1,2}|mot|hai|ba|bon|nam)\s*(?:nguoi|ng|khach|dua)\b/.test(normalized);
   return {
     status: "known",
     operator: selected.operator,
@@ -290,6 +302,22 @@ function semanticDurationCandidate(message, registry = null) {
   };
 }
 
+function hasExplicitDurationRemoval(normalized) {
+  return [
+    /\b(?:thoi luong|duration|so ngay|may ngay)\b.{0,24}\b(?:khong quan trong|khong can(?: gioi han)?|khong gioi han|cung duoc)\b/,
+    /\b(?:khong quan trong|khong can(?: gioi han)?|khong gioi han|bo(?: yeu cau| gioi han)?)\b.{0,24}\b(?:thoi luong|duration|so ngay|may ngay|\d{1,2}\s*ngay)\b/,
+    /\b(?:bo|khong can|khong)\s+gioi han\s+ngay(?:\s+di)?\b/,
+    /\bdi\s+bao lau\s+cung duoc\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function hasAmbiguousTimeRemoval(normalized) {
+  return [
+    /\b(?:thoi gian\b.{0,24}\bkhong quan trong|khong quan trong\b.{0,24}\bthoi gian)\b/,
+    /\b(?:thoi\s+)?(?:bo|khong can)\s+gioi han\s+thoi gian\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function semanticTravelerCandidate(message, previousSlot, registry = null) {
   const normalized = normalizeText(message);
   const childRemoval = normalized.match(/(?:khong co|bo|khong di cung|khong (?:dan|dua|cho))\s+(?:be|tre(?: em)?)(?:\s+(?:di|theo))?(?:\s+nua)?\b|(?:be|tre(?: em)?)\s+(?:khong di|khong theo|khong co)\s+nua\b/);
@@ -314,9 +342,9 @@ function semanticTravelerCandidate(message, previousSlot, registry = null) {
     childAges.push(Number(match[1]));
   }
 
-  const adultMatches = globalMatches(normalized, new RegExp(`\\b(${NUMBER_TOKEN})\\s*nguoi\\s*lon\\b`, "g"));
-  const childCountMatches = globalMatches(normalized, new RegExp(`\\b(${NUMBER_TOKEN})\\s*(?:tre(?: em)?|be)\\b(?!\\s*tuoi)`, "g"));
-  const generalMatches = globalMatches(normalized, new RegExp(`\\b(${NUMBER_TOKEN})\\s*(?:nguoi|khach|dua)\\b(?!\\s*lon)`, "g"));
+  const adultMatches = globalMatches(normalized, new RegExp(`\\b(${NUMBER_TOKEN})\\b\\s*nguoi\\s*lon\\b`, "g"));
+  const childCountMatches = globalMatches(normalized, new RegExp(`\\b(${NUMBER_TOKEN})\\b\\s*(?:tre(?: em)?|be)\\b(?!\\s*tuoi)`, "g"));
+  const generalMatches = globalMatches(normalized, new RegExp(`\\b(${NUMBER_TOKEN})\\b\\s*(?:nguoi|ng|khach|dua)\\b(?!\\s*lon)`, "g"));
   const latestAdult = adultMatches.at(-1);
   const latestChildCount = childCountMatches.at(-1);
   const latestGeneral = generalMatches.at(-1);
@@ -376,12 +404,15 @@ const OPEN_DESTINATION_STOP_WORDS = new Set([
   "ngay", "dem", "nguoi", "khach", "be", "tre", "vao", "luc", "tu", "den", "thang", "tuan",
   "cuoi", "dau", "mai", "mot", "minh", "cap", "doi", "co", "khong", "nao", "choi",
   "vua", "noi", "nay", "do", "kia", "luc", "truoc", "sau", "nhung", "dung",
-  "muon", "it", "qua", "nhieu", "theo", "tieu", "chi",
+  "muon", "phai", "it", "qua", "nhieu", "theo", "tieu", "chi",
 ]);
 const GENERIC_DESTINATION_VALUES = new Set([
   "bien", "nui", "nghi duong", "kham pha", "mao hiem", "van hoa", "am thuc", "choi",
-  "nuoc ngoai", "trong nuoc", "mien bac", "mien trung", "mien nam", "noi nao", "cho nao", "dau",
+  "nuoc ngoai", "trong nuoc", "mien bac", "mien trung", "mien nam", "noi nao", "cho nao", "dau", "khac",
 ]);
+const NON_DESTINATION_ACTIVITY_PREFIXES = [
+  "boi", "thuyen", "du thuyen", "cheo thuyen", "kayak", "cheo kayak", "trekking", "leo nui",
+];
 const OPEN_DESTINATION_RAW_STOP_WORDS = new Set(["thứ", "đầu", "cuối", "vừa"]);
 
 function openVocabularyDestinations(message) {
@@ -405,7 +436,8 @@ function openVocabularyDestinations(message) {
     }
     const value = kept.join(" ").trim();
     const key = normalizeText(value);
-    if (!value || GENERIC_DESTINATION_VALUES.has(key)) continue;
+    const activityPhrase = NON_DESTINATION_ACTIVITY_PREFIXES.some((prefix) => key === prefix || key.startsWith(`${prefix} `));
+    if (!value || GENERIC_DESTINATION_VALUES.has(key) || activityPhrase) continue;
     results.push({ value, start: normalizedMessage.indexOf(key) });
   }
   return results.filter((item) => item.start >= 0);
@@ -413,7 +445,7 @@ function openVocabularyDestinations(message) {
 
 function semanticDestinationCandidate(message, previousSlot, registry = null) {
   const normalized = normalizeText(message);
-  const open = normalized.match(/\b(?:(?:khong|chua) biet (?:nen )?di dau|(?:di dau|cho nao|dia diem nao)\b(?=[^.!?]{0,56}\bcung (?:duoc|ok|oke|thoai mai)\b))/);
+  const open = normalized.match(/\b(?:(?:khong|chua) biet (?:nen )?di dau|(?:di dau|cho nao|dia diem nao)\b(?=[^.!?]{0,56}\bcung (?:duoc|ok|oke|thoai mai)\b)|(?:di\s+)?(?:cho|noi|dia diem)\s+khac(?:\s+cung)?\s+(?:duoc|ok|oke|thoai mai)\b)/);
   if (open) {
     registry?.claim("destination.status", open.index, open.index + open[0].length);
     return { status: "intentionally_open", origin: previousSlot?.origin || null, values: [], excludedValues: previousSlot?.excludedValues || [] };
@@ -647,7 +679,7 @@ function parseDateConstraint(message, previousDateRange = null, now = new Date()
     if (value) return { start: value, end: value, label: `${day}/${month}/${year}` };
   }
 
-  const dayOnly = normalized.match(/^\s*(\d{1,2})\s*(?:thi sao|con khong)?\s*\??\s*$/);
+  const dayOnly = normalized.match(/^\s*(\d{1,2})\s*(?:thi sao|con khong)\s*\??\s*$/);
   if (dayOnly && previousDateRange?.start) {
     const previousMatch = previousDateRange.start.match(/^(\d{4})-(\d{2})-/);
     const year = Number(previousMatch?.[1]);
@@ -728,9 +760,20 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
   }
 
   const durationSlot = semanticDurationCandidate(message, spanRegistry);
-  const removeDate = /\b(?:khong can(?: dung)?(?:\s+ngay)?(?:\s+\d{1,3}\s+ngay nua)?|doi ngay khac|ngay khac cung duoc|khong quan trong (?:ngay|thoi gian))\b/.test(normalized) &&
-    /(?:ngay|thoi gian)/.test(normalized);
-  const removeDuration = !removeDate && /\b(?:khong can|bo|khong quan trong)\b.{0,16}\b(?:thoi luong|\d{1,2}\s*ngay)\b/.test(normalized);
+  const previousDateActive = previousSemantic.slots.date.status === "known";
+  const previousDurationActive = ["known", "relaxed"].includes(previousSemantic.slots.duration.status);
+  const ambiguousTimeRemoval = hasAmbiguousTimeRemoval(normalized);
+  const numericDayRemoval = normalized.match(/\bkhong can(?:\s+dung)?\s+\d{1,3}\s+ngay\s+nua\b/);
+  const numericRemovalTargetsDuration = Boolean(numericDayRemoval && previousDurationActive && !previousDateActive);
+  const explicitDateRemoval = /\b(?:khong can dung(?:\s+ngay|\s+\d{1,3}\s+ngay nua)|(?:bo|khong can)\s+(?:(?:dieu kien|yeu cau)\s+)?ngay(?:\s+di)?|doi ngay khac|ngay khac cung duoc|khong quan trong ngay)\b/.test(normalized) &&
+    /(?:ngay|thoi gian)/.test(normalized) &&
+    !numericRemovalTargetsDuration;
+  const removeDate = explicitDateRemoval || (ambiguousTimeRemoval && previousDateActive);
+  const removeDuration = (!explicitDateRemoval && hasExplicitDurationRemoval(normalized)) ||
+    (ambiguousTimeRemoval && (previousDurationActive || !previousDateActive));
+  if (removeDuration && numericDayRemoval) {
+    spanRegistry.claim("duration.removed", numericDayRemoval.index, numericDayRemoval.index + numericDayRemoval[0].length);
+  }
   if (removeDate) {
     removeConstraint(meta, "dateRange");
     semanticSlots.date = { ...previousSemantic.slots.date, status: "removed", start: null, end: null, label: null };
@@ -769,15 +812,27 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
   const explicitRegion = ["Miền Bắc", "Miền Trung", "Miền Nam"].find((region) =>
     normalized.includes(normalizeText(region))
   );
+  let regionReplacesDestination = false;
   if (explicitRegion) {
     delta.region = explicitRegion;
     markConstraint(meta, "region");
     const oldDestinationRegion = DESTINATION_REGIONS.get(normalizeText(previousSemantic.slots.destination.values[0]));
-    if (oldDestinationRegion && oldDestinationRegion !== explicitRegion) removeConstraint(meta, "destination");
+    if (oldDestinationRegion && oldDestinationRegion !== explicitRegion) {
+      removeConstraint(meta, "destination");
+      regionReplacesDestination = true;
+    }
   }
 
   const destinationSlot = semanticDestinationCandidate(message, previousSemantic.slots.destination, spanRegistry);
-  if (destinationSlot) {
+  const destinationMentionedThisTurn = spanRegistry.list().some((span) => span.owner.startsWith("destination."));
+  if (regionReplacesDestination && !destinationMentionedThisTurn) {
+    semanticSlots.destination = {
+      ...previousSemantic.slots.destination,
+      status: "removed",
+      values: [],
+    };
+    delete delta.destination;
+  } else if (destinationSlot) {
     semanticSlots.destination = destinationSlot;
     if (destinationSlot.status === "intentionally_open") {
       removeConstraint(meta, "destination", "region");
@@ -800,6 +855,7 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
   const previousInterestSlot = previousSemantic.slots.interests;
   const currentInterests = [];
   const excludedInterests = [];
+  const relaxedExcludedInterests = [];
   if (destinationSlot?.status === "known" && destinationSlot.values.some((value) => normalizeText(value) === "mien tay")) {
     currentInterests.push("Miền Tây");
   }
@@ -812,7 +868,29 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
     if (!matched) continue;
     if (spanRegistry.overlaps(matched.index, matched.index + matched.word.length)) continue;
     const before = normalized.slice(Math.max(0, matched.index - 32), matched.index);
-    const negative = /(?:khong\s+(?:thich|muon|khoai)(?:\s+di)?|khong\s+di|dung(?:\s+goi\s+y)?|tranh|ne|loai\s+tru)\s*$/.test(before);
+    const after = normalized.slice(matched.index + matched.word.length, matched.index + matched.word.length + 24);
+    const deniesInterestNegation = /\bkhong phai\s+khong(?:\s+(?:thich|muon|khoai)(?:\s+di)?|\s+di)?\s*$/.test(before);
+    if (deniesInterestNegation) {
+      if (spanRegistry.claim("interests.relaxedExcludedValues", matched.index, matched.index + matched.word.length)) {
+        relaxedExcludedInterests.push(interest.value);
+      }
+      continue;
+    }
+    const previouslyExcluded = (previousInterestSlot.excludedValues || [])
+      .some((value) => normalizeText(value) === normalizeText(interest.value));
+    const explicitlyRemovesExclusion = previouslyExcluded
+      && /(?:bo|khong can)(?:\s+(?:dieu kien|yeu cau))?\s+khong(?:\s+(?:muon|thich))?\s*$/.test(before);
+    const acceptsPreviouslyExcludedInterest = previouslyExcluded
+      && !/(?:khong(?:\s+(?:thich|muon|khoai)(?:\s+di)?|\s+di)?|dung(?:\s+goi\s+y)?(?:\s+(?:tour|chuyen\s+di)(?:\s+phai)?)?|tranh|ne|tru|loai\s+tru|ngai(?:\s+phai)?)\s*$/.test(before)
+      && /\b(?:cung duoc|khong sao)\b/.test(after);
+    const relaxesExclusion = explicitlyRemovesExclusion || acceptsPreviouslyExcludedInterest;
+    if (relaxesExclusion) {
+      if (spanRegistry.claim("interests.relaxedExcludedValues", matched.index, matched.index + matched.word.length)) {
+        relaxedExcludedInterests.push(interest.value);
+      }
+      continue;
+    }
+    const negative = /(?:khong(?:\s+(?:thich|muon|khoai)(?:\s+di)?|\s+di)?|dung(?:\s+goi\s+y)?(?:\s+(?:tour|chuyen\s+di)(?:\s+phai)?)?|tranh|ne|tru|loai\s+tru|ngai(?:\s+phai)?)\s*$/.test(before);
     if (!spanRegistry.claim(negative ? "interests.excludedValues" : "interests.values", matched.index, matched.index + matched.word.length)) continue;
     if (negative) {
       excludedInterests.push(interest.value);
@@ -829,6 +907,7 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
     });
     const values = uniqueStrings([...retained, ...currentInterests]);
     const excludedValues = uniqueStrings([...(previousInterestSlot.excludedValues || []), ...excludedInterests])
+      .filter((excluded) => !relaxedExcludedInterests.some((value) => normalizeText(value) === normalizeText(excluded)))
       .filter((excluded) => !values.some((value) => normalizeText(value) === normalizeText(excluded)));
     semanticSlots.interests = { status: "known", values, excludedValues };
     delta.interests = values;
@@ -840,8 +919,20 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
   } else if (excludedInterests.length) {
     const values = (previousInterestSlot.values || [])
       .filter((value) => !excludedInterests.some((excluded) => normalizeText(excluded) === normalizeText(value)));
-    const excludedValues = uniqueStrings([...(previousInterestSlot.excludedValues || []), ...excludedInterests]);
+    const excludedValues = uniqueStrings([...(previousInterestSlot.excludedValues || []), ...excludedInterests])
+      .filter((excluded) => !relaxedExcludedInterests.some((value) => normalizeText(value) === normalizeText(excluded)));
     semanticSlots.interests = { status: values.length ? "known" : "removed", values, excludedValues };
+    delta.interests = values;
+    markConstraint(meta, "interests", constraintMode(previousState, "interests", "soft"));
+  } else if (relaxedExcludedInterests.length) {
+    const values = previousInterestSlot.values || [];
+    const excludedValues = (previousInterestSlot.excludedValues || [])
+      .filter((excluded) => !relaxedExcludedInterests.some((value) => normalizeText(value) === normalizeText(excluded)));
+    semanticSlots.interests = {
+      status: values.length || excludedValues.length ? "known" : "removed",
+      values,
+      excludedValues,
+    };
     delta.interests = values;
     markConstraint(meta, "interests", constraintMode(previousState, "interests", "soft"));
   }
@@ -862,7 +953,20 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
     delta.pace = "balanced";
     markConstraint(meta, "pace", "soft");
   }
-  const destinationExclusions = destinationSlot?.excludedValues || previousSemantic.slots.destination.excludedValues || [];
+  const touchedInterestValues = new Set(
+    [...currentInterests, ...excludedInterests, ...relaxedExcludedInterests].map(normalizeText)
+  );
+  const destinationState = semanticSlots.destination || destinationSlot || previousSemantic.slots.destination;
+  if (touchedInterestValues.size && destinationState?.excludedValues?.some((value) => touchedInterestValues.has(normalizeText(value)))) {
+    semanticSlots.destination = {
+      ...destinationState,
+      excludedValues: destinationState.excludedValues.filter((value) => !touchedInterestValues.has(normalizeText(value))),
+    };
+  }
+  const destinationExclusions = semanticSlots.destination?.excludedValues
+    || destinationSlot?.excludedValues
+    || previousSemantic.slots.destination.excludedValues
+    || [];
   const interestExclusions = semanticSlots.interests?.excludedValues || previousInterestSlot.excludedValues || [];
   const exclusions = uniqueStrings([...destinationExclusions, ...interestExclusions]);
   if (exclusions.length || previousState.exclusions?.length) delta.exclusions = exclusions;
@@ -1007,7 +1111,7 @@ function mergeConstraintState(previous = {}, delta = {}) {
 function detectRequestType(message, entityState = {}, delta = {}) {
   const normalized = normalizeText(message).replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   if (/^(?:ban|tro ly|tro ly vietvoyage) (?:(?:co the )?(?:giup|ho tro|lam) (?:duoc )?gi|giup duoc gi)(?: cho toi)?$/.test(normalized)) return "general";
-  if (/so sanh|cai nao|tour nao .* hon|khac nhau|(?:tour|cai)\s*(?:thu\s*)?(?:\d{1,2}|dau tien|mot|hai|ba)\s*(?:thi sao|the nao)/.test(normalized)) return "comparison";
+  if (/so sanh|\bso voi\b|cai nao|tour nao .* hon|khac nhau|(?:tour|cai)\s*(?:thu\s*)?(?:\d{1,2}|dau tien|mot|hai|ba)\s*(?:thi sao|the nao)/.test(normalized)) return "comparison";
   if (
     /con cho|con ve|available|khoi hanh.*(?:ngay|\d)|ngay .* con|thanh toan/.test(normalized) ||
     /\b\d{1,2}[/-]\d{1,2}\b/.test(normalized) ||
@@ -1022,8 +1126,9 @@ function detectRequestType(message, entityState = {}, delta = {}) {
     Object.keys(delta).length &&
     (entityState.pendingAction === "recommendation" || entityState.lastRequestType === "recommendation")
   ) return "recommendation";
+  if (isCancellationPolicyQuestion(normalized)) return "tour_detail";
   if (
-    /khach san|luu tru|ve may bay|may bay|flight|phuong tien|di chuyen|xe khach|tau hoa|bao gom|khong bao gom|lich trinh|chinh sach|huy tour|gia (?:tour|bao nhieu)|tour .* gia|bao nhieu ngay|may ngay|thoi luong|khoi hanh|lich di|khuyen mai|bua an|cac bua|an gi|tour nay|tour do|tour thu|cai dau|cai thu|the nao/.test(normalized) ||
+    /khach san|luu tru|ve may bay|may bay|flight|phuong tien|di chuyen|xe khach|tau hoa|bao gom|khong bao gom|lich trinh|chinh sach|gia (?:tour|bao nhieu|tong)|tong (?:gia|tien|bao nhieu)|tour .* gia|bao nhieu ngay|may ngay|thoi luong|khoi hanh|lich di|khuyen mai|bua an|cac bua|an gi|tour nay|tour do|tour thu|cai dau|cai thu|the nao/.test(normalized) ||
     entityState.pendingAction === "tour_detail"
   ) return "tour_detail";
   return "general";
@@ -1125,7 +1230,10 @@ function approximateBudgetTradeOff(price, constraints = {}, partySize = 1) {
   if (slot?.status !== "known" || slot.operator !== "approximate" || price == null) return null;
   if (budgetMatchEvidence(price, constraints).matched) return null;
   if (slot.scope === "total") {
-    return `tổng giá ước tính ${formatMoney(Number(price) * Math.max(1, Number(partySize) || 1))} cho ${Math.max(1, Number(partySize) || 1)} người cao hơn mốc khoảng ${formatMoney(slot.target)}`;
+    const normalizedPartySize = Math.max(1, Number(partySize) || 1);
+    const estimatedTotal = Number(price) * normalizedPartySize;
+    const relation = estimatedTotal > Number(slot.target) ? "cao hơn" : "thấp hơn";
+    return `tổng giá ước tính ${formatMoney(estimatedTotal)} cho ${normalizedPartySize} người ${relation} mốc khoảng ${formatMoney(slot.target)}`;
   }
   if (slot.scope === "per_person") {
     return `giá ${formatMoney(price)} mỗi người lệch khỏi mốc khoảng ${formatMoney(slot.target)}`;
@@ -1185,15 +1293,19 @@ function recommendationReasonGroups(tour, constraints, preferences = {}, groundi
 
   const preferenceReasons = [];
   const currentAreas = uniqueStrings([constraints.destination, constraints.region, ...(constraints.interests || [])]).map(normalizeText);
+  const currentExclusions = new Set((constraints.exclusions || []).map(normalizeText));
+  const primaryHaystack = tourEvidenceText(tour, { destinationOnly: true });
   const hasCurrentStyle = Boolean(constraints.pace || (constraints.interests || []).some((value) => ["nghỉ dưỡng", "khám phá", "mạo hiểm"].includes(value)));
-  const addPreferenceMatch = (values, label) => {
+  const addPreferenceMatch = (values, label, source = haystack) => {
     const matches = (values || []).filter((value) => {
       const key = normalizeText(value);
-      return !currentAreas.includes(key) && semanticInterestMatch(haystack, value);
+      return !currentAreas.includes(key)
+        && !currentExclusions.has(key)
+        && semanticInterestMatch(source, value);
     });
     if (matches.length) preferenceReasons.push(`${label} ${matches.join(", ")}`);
   };
-  addPreferenceMatch(preferences.preferredDestinations, "điểm đến bạn thường thích");
+  addPreferenceMatch(preferences.preferredDestinations, "điểm đến bạn thường thích", primaryHaystack);
   if (!constraints.region && (preferences.preferredRegions || []).some((region) => normalizeText(region) === normalizeText(tour.region))) {
     preferenceReasons.push(`thuộc ${tour.region}, khu vực bạn thường ưu tiên`);
   }
@@ -1327,6 +1439,9 @@ function buildZeroResultReply(constraints = {}, analysis = {}, options = {}) {
   }
   if (blockers.length) {
     const labels = blockers.map((field) => constraintLabel(field, constraints));
+    const replyFocus = labels.some((label) => normalizeText(focus).includes(normalizeText(label)))
+      ? "tour phù hợp"
+      : focus;
     const suggestions = blockers.map((field) => field === "budget"
       ? "tăng ngân sách một chút"
       : field === "dateRange"
@@ -1338,7 +1453,7 @@ function buildZeroResultReply(constraints = {}, analysis = {}, options = {}) {
             : field === "exclusions"
               ? "giữ loại trừ này và thử một khu vực khác, hoặc bỏ loại trừ nếu bạn thấy phù hợp"
               : `linh hoạt hơn về ${constraintLabel(field, constraints)}`);
-    return `Hiện mình chưa tìm thấy ${focus} đồng thời đáp ứng ${labels.join(" và ")}. Nếu bạn có thể ${uniqueStrings(suggestions).join(" hoặc ")}, mình sẽ tìm thêm lựa chọn.`;
+    return `Hiện mình chưa tìm thấy ${replyFocus} đồng thời đáp ứng ${labels.join(" và ")}. Nếu bạn có thể ${uniqueStrings(suggestions).join(" hoặc ")}, mình sẽ tìm thêm lựa chọn.`;
   }
   const known = ["budget", "dateRange", "days", "travelers"].filter((field) => constraints[field] || (field === "budget" && (constraints.maxPrice || constraints.totalBudget)));
   if (known.length) {
@@ -1388,7 +1503,7 @@ function buildComparison(tours, constraints, options = {}) {
       tourId: recommended.tourId,
       basis: "semantic_evidence",
       evidence: recommended.fitEvidence,
-      reason: `${recommended.name} có nhiều evidence phù hợp hơn theo các điều kiện hiện tại: ${recommended.fitEvidence.join("; ")}.`,
+      reason: `${recommended.name} có nhiều căn cứ phù hợp hơn theo các điều kiện hiện tại: ${recommended.fitEvidence.join("; ")}.`,
     };
   } else if (recommended && runnerUp && recommended.price !== null && runnerUp.price !== null && recommended.price < runnerUp.price) {
     const savings = runnerUp.price - recommended.price;
@@ -1397,7 +1512,7 @@ function buildComparison(tours, constraints, options = {}) {
       comparedWithTourId: runnerUp.tourId,
       basis: "lower_price",
       savings,
-      reason: `${recommended.name} có giá ${formatMoney(recommended.price)}, thấp hơn ${runnerUp.name} ${formatMoney(savings)} trên cùng factual basis.`,
+      reason: `${recommended.name} có giá ${formatMoney(recommended.price)}, thấp hơn ${runnerUp.name} ${formatMoney(savings)} trên cùng cơ sở dữ liệu.`,
     };
   } else if (recommended && !runnerUp) {
     recommendation = {
@@ -1421,7 +1536,7 @@ function buildComparisonReply(comparison) {
     lines.push(`\n**${tour.name}** — ${tour.duration} ngày, từ ${formatMoney(tour.price)}.`);
     if (tour.relevantHighlights.length) lines.push(`Điểm nổi bật: ${tour.relevantHighlights.join("; ")}.`);
     lines.push(tour.pros.length ? `Ưu điểm: ${tour.pros.join("; ")}.` : "Ưu điểm theo yêu cầu hiện tại: chưa có dữ liệu đủ rõ để kết luận.");
-    if (tour.cons.length) lines.push(`Trade-off: ${tour.cons.join("; ")}.`);
+    if (tour.cons.length) lines.push(`Điểm cần cân nhắc: ${tour.cons.join("; ")}.`);
   }
   if (comparison.recommendation) lines.push(`\nKhuyến nghị: ${comparison.recommendation.reason}`);
   return lines.join("\n");
@@ -1462,6 +1577,28 @@ function upcomingDepartures(tour, now = new Date()) {
     .slice(0, 4);
 }
 
+function requestedItineraryDays(message) {
+  const normalized = normalizeText(message);
+  const compact = normalized.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const matches = [...normalized.matchAll(/\bngay\s+(?<day>\d{1,2}|mot|hai|ba|bon|nam|sau|bay)\b/g)]
+    .filter((match) => {
+      const before = normalized.slice(Math.max(0, match.index - 16), match.index);
+      const after = normalized.slice(match.index + match[0].length, match.index + match[0].length + 16);
+      return !(/\bmoi\s*$/.test(before) && /^\s*(?:dong|y|cau|doan|bullet)\b/.test(after));
+    });
+  if (!matches.length) return [];
+  const hasItineraryCue = /\b(?:lam gi|co gi|thi sao|the nao|hoat dong gi|di dau|tham quan gi|lich trinh|noi gon|tom tat)\b/.test(normalized)
+    || /^ngay\s+(?:\d{1,2}|mot|hai|ba|bon|nam|sau|bay)(?:\s+(?:nhe|nha|a|ha))?$/.test(compact);
+  if (!hasItineraryCue) return [];
+  const wordDays = new Map([
+    ["mot", 1], ["hai", 2], ["ba", 3], ["bon", 4],
+    ["nam", 5], ["sau", 6], ["bay", 7],
+  ]);
+  return [...new Set(matches.map((match) => (
+    /^\d+$/.test(match.groups.day) ? Number(match.groups.day) : wordDays.get(match.groups.day)
+  )).filter(Boolean))];
+}
+
 function buildBaseTourDetail(tour, message, now = new Date()) {
   const normalized = normalizeText(message);
   const accommodations = getAccommodation(tour);
@@ -1478,10 +1615,25 @@ function buildBaseTourDetail(tour, message, now = new Date()) {
   let requestedFact = "overview";
   let dataStatus = "available";
   let reply;
-  const asksPrice = /gia (?:tour|bao nhieu)|tour .* gia|bao nhieu tien|chi phi/.test(normalized);
+  const asksPrice = /gia (?:tour|bao nhieu|tong)|tong (?:gia|tien|bao nhieu)|tour .* gia|bao nhieu tien|chi phi/.test(normalized);
   const asksDuration = /bao nhieu ngay|may ngay|thoi luong|\d{1,2}\s*ngay\s*(?:a|ha|phai khong|dung khong)/.test(normalized);
+  const itineraryDays = requestedItineraryDays(message);
+  const conciseItinerary = /\b(?:noi gon|tom tat|tra loi ngan|ngan gon)\b/.test(normalized);
 
-  if (asksPrice && asksDuration) {
+  if (itineraryDays.length) {
+    requestedFact = itineraryDays.length === 1 ? "itinerary_day" : "itinerary_days";
+    let missingDay = false;
+    reply = itineraryDays.map((itineraryDay) => {
+      const day = (tour.itinerary || []).find((item, index) => Number(item?.dayNumber || index + 1) === itineraryDay);
+      const detail = conciseItinerary
+        ? String(day?.title || day?.description || "").trim()
+        : [day?.title, day?.description].filter(Boolean).join(" — ");
+      if (detail) return `Ngày ${itineraryDay}: ${detail}`;
+      missingDay = true;
+      return `Ngày ${itineraryDay}: Dữ liệu hiện tại của tour **${tour.name}** chưa có nội dung.`;
+    }).join("\n");
+    if (missingDay) dataStatus = "missing";
+  } else if (asksPrice && asksDuration) {
     requestedFact = "price_duration";
     reply = `Tour **${tour.name}** hiện có giá cơ bản ${formatMoney(tour.basePrice)} và thời lượng ${tour.days} ngày.`;
   } else if (/khach san|luu tru/.test(normalized)) {
@@ -1502,7 +1654,7 @@ function buildBaseTourDetail(tour, message, now = new Date()) {
       ? `Dữ liệu hiện tại của tour **${tour.name}** ghi nhận phương tiện/di chuyển: ${transportFacts.join("; ")}.`
       : `Dữ liệu hiện tại của tour **${tour.name}** chưa nêu rõ phương tiện di chuyển.`;
     if (!transportFacts.length) dataStatus = "missing";
-  } else if (/chinh sach|huy tour|hoan (?:tien|tour)/.test(normalized)) {
+  } else if (isCancellationPolicyQuestion(normalized)) {
     requestedFact = "cancellation_policy";
     reply = tour.cancellationPolicy
       ? `Chính sách hủy hiện có của tour **${tour.name}**: ${tour.cancellationPolicy}`
@@ -1557,6 +1709,8 @@ function buildBaseTourDetail(tour, message, now = new Date()) {
       tourId: String(tour._id),
       name: tour.name,
       requestedFact,
+      requestedDay: itineraryDays.length === 1 ? itineraryDays[0] : null,
+      requestedDays: itineraryDays,
       dataStatus,
       price: tour.basePrice,
       duration: tour.days,
@@ -1582,6 +1736,10 @@ function buildBaseTourDetail(tour, message, now = new Date()) {
 function buildTourDetail(tour, message, now = new Date(), constraints = {}) {
   const baseDetail = buildBaseTourDetail(tour, message, now);
   const factual = buildTourFactualContext(tour, constraints, { now });
+  const normalized = normalizeText(message);
+  const compact = normalized.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  const asksTotalPrice = /gia tong|tong (?:gia|tien|bao nhieu)/.test(normalized)
+    || /^(?:tong|tong gia|tong tien)$/.test(compact);
   const structuredContent = {
     ...baseDetail.structuredContent,
     price: factual.priceBasis.amount,
@@ -1590,10 +1748,29 @@ function buildTourDetail(tour, message, now = new Date(), constraints = {}) {
     partySize: factual.partySize,
     factualFingerprint: factual.fingerprint,
   };
+  if (asksTotalPrice) {
+    const unitPrice = factual.priceBasis.amount;
+    const totalPrice = unitPrice === null || unitPrice === undefined
+      ? null
+      : Number(unitPrice) * factual.partySize;
+    const basisLabel = factual.priceBasis.type === "departure"
+      ? ` khởi hành ngày ${formatDate(factual.priceBasis.date)}`
+      : " ở mức giá cơ bản hiện tại";
+    return {
+      reply: totalPrice === null
+        ? `Dữ liệu hiện tại chưa có mức giá phù hợp để tính tổng cho ${factual.partySize} người của tour **${tour.name}**.`
+        : `Tổng giá tour **${tour.name}**${basisLabel} cho ${factual.partySize} người là ${formatMoney(totalPrice)} (${formatMoney(unitPrice)} mỗi người).`,
+      structuredContent: {
+        ...structuredContent,
+        requestedFact: "price_total",
+        totalPrice,
+        dataStatus: totalPrice === null ? "missing" : "available",
+      },
+    };
+  }
   if (!constraints.dateRange?.start) return { ...baseDetail, structuredContent };
 
-  const normalized = normalizeText(message);
-  const asksPrice = /gia (?:tour|bao nhieu)|tour .* gia|bao nhieu tien|chi phi/.test(normalized);
+  const asksPrice = /gia (?:tour|bao nhieu|tong)|tong (?:gia|tien|bao nhieu)|tour .* gia|bao nhieu tien|chi phi/.test(normalized);
   const asksDuration = /bao nhieu ngay|may ngay|thoi luong|\d{1,2}\s*ngay\s*(?:a|ha|phai khong|dung khong)/.test(normalized);
   if (factual.priceBasis.type !== "departure") {
     if (!asksPrice && baseDetail.structuredContent.requestedFact !== "overview") return { ...baseDetail, structuredContent };
@@ -1728,10 +1905,17 @@ function candidateListForReference(state, message) {
   const normalized = normalizeText(message);
   const historical = /\b(?:luc nay|hoi nay|ban nay|luc truoc|hoi truoc|truoc do|vua roi|danh sach truoc|danh sach luc nay)\b/.test(normalized);
   const active = lists.find((list) => list.candidateListId === state?.activeCandidateListId) || lists.at(-1) || null;
-  if (!historical) return active;
   const ordinal = ordinalFromMessage(message);
   const selectedList = lists.find((list) => list.candidateListId === state?.selectedCandidateListId);
-  if (ordinal && selectedList?.tourIds[ordinal - 1] === String(state?.selectedTourId || state?.currentTourId || "")) {
+  const selectedTourId = String(state?.selectedTourId || state?.currentTourId || "");
+  if (!historical) {
+    const activeCannotResolve = ordinal && !active?.tourIds[ordinal - 1];
+    if (activeCannotResolve
+      && active?.source === "grounded_answer"
+      && selectedList?.tourIds[ordinal - 1] === selectedTourId) return selectedList;
+    return active;
+  }
+  if (ordinal && selectedList?.tourIds[ordinal - 1] === selectedTourId) {
     return selectedList;
   }
   const activeIndex = active ? lists.findIndex((list) => list.candidateListId === active.candidateListId) : lists.length;
@@ -1745,7 +1929,7 @@ function candidateListForReference(state, message) {
 function ordinalFromMessage(message) {
   const normalized = normalizeText(message);
   const entityNoun = "(?:tour|cai|phuong an|lua chon)";
-  const words = { "dau tien": 1, "mot": 1, "hai": 2, "ba": 3, "bon": 4, "nam": 5 };
+  const words = { "dau tien": 1, "dau": 1, "mot": 1, "hai": 2, "ba": 3, "bon": 4, "nam": 5 };
   const numeric = normalized.match(new RegExp(`${entityNoun}\\s*(?:(?:thu|so)\\s*)?(\\d{1,2})\\b`));
   if (numeric) return Number(numeric[1]);
   for (const [word, value] of Object.entries(words)) {
@@ -1760,11 +1944,13 @@ function hasTourReferenceSignal(message, entityState = {}) {
   const hasEntityMemory = uniqueIds([
     entityState.selectedTourId,
     entityState.currentTourId,
+    entityState.previousSelectedTourId,
     ...(entityState.lastReferencedTourIds || []),
     ...(entityState.lastSuggestedTourIds || []),
   ]).length > 0;
   if (!hasEntityMemory) return false;
   if (/\b(?:may|cac|nhung|loat)\s+tour\s+(?:vua|luc)\b/.test(normalized)) return false;
+  if (/\b(?:tour|cai|phuong an|lua chon)\s+(?:truoc|cu)\b|\bquay lai\s+(?:tour|cai|phuong an|lua chon)(?:\s+(?:truoc|cu))?\b/.test(normalized)) return true;
   if (/\b(?:tour|cai|phuong an|lua chon)\s+(?:nay|do|kia|cuoi(?: cung)?)\b|\btour\s+(?:vua|luc)\b/.test(normalized)) return true;
   return Boolean(
     uniqueIds([
@@ -1781,15 +1967,25 @@ function resolveEntityIds({ message, requestType, pageContext = {}, entityState 
   const candidateList = candidateListForReference(state, message);
   const suggested = uniqueIds(candidateList?.tourIds || state.lastSuggestedTourIds || []);
   const candidateListId = candidateList?.candidateListId || null;
+  const selected = uniqueIds([state.selectedTourId, state.currentTourId]);
+  const focusedTourId = /^[0-9a-fA-F]{24}$/.test(String(state.focusedTourId || ""))
+    ? String(state.focusedTourId)
+    : null;
+  const lastReferenced = uniqueIds(state.lastReferencedTourIds || []);
   const referenced = uniqueIds([
     state.selectedTourId,
     state.currentTourId,
-    ...(state.lastReferencedTourIds || []),
+    ...lastReferenced,
   ]);
   const mentioned = uniqueIds(mentionedTourIds);
   const pageTourId = /^[0-9a-fA-F]{24}$/.test(String(pageContext.tourId || "")) ? String(pageContext.tourId) : null;
+  const previousSelectedTourId = /^[0-9a-fA-F]{24}$/.test(String(state.previousSelectedTourId || ""))
+    ? String(state.previousSelectedTourId)
+    : null;
   const ordinal = ordinalFromMessage(message);
   const mentionsLast = /(?:tour|cai|phuong an|lua chon) cuoi(?: cung)?\b/.test(normalized);
+  const mentionsPreviousSelection = /\b(?:tour|cai|phuong an|lua chon)\s+(?:truoc|cu)\b|\bquay lai\s+(?:tour|cai|phuong an|lua chon)(?:\s+(?:truoc|cu))?\b/.test(normalized);
+  const mentionsHistoricalSelection = /\b(?:(?:tour|cai|phuong an|lua chon)\s+)?(?:luc nay|hoi nay|ban nay|luc truoc|hoi truoc|truoc do|vua roi)\b/.test(normalized);
 
   const mentionsCurrent = /(?:tour|cai|phuong an|lua chon) nay\b/.test(normalized);
   const mentionsRecent = /(?:tour|cai|phuong an|lua chon) (?:do|kia)|tour vua (?:noi|goi y|xem|ke)|tour luc nay/.test(normalized);
@@ -1797,6 +1993,22 @@ function resolveEntityIds({ message, requestType, pageContext = {}, entityState 
     const ids = uniqueIds([...mentioned, ...(mentionsCurrent && pageTourId ? [pageTourId] : [])]);
     if (requestType === "comparison") return ids.length >= 2 ? { ids: ids.slice(0, 3), source: "explicit", ambiguousIds: [] } : { ids, source: "explicit", ambiguousIds: ids, needsClarification: true };
     return ids.length === 1 ? { ids, source: "explicit", ambiguousIds: [] } : { ids: [], source: "explicit", ambiguousIds: ids, needsClarification: true };
+  }
+
+  if (requestType === "comparison"
+    && mentionsHistoricalSelection
+    && selected.length === 1
+    && previousSelectedTourId
+    && previousSelectedTourId !== selected[0]) {
+    return {
+      ids: [selected[0], previousSelectedTourId],
+      source: "current_previous_comparison",
+      ambiguousIds: [],
+    };
+  }
+
+  if (mentionsPreviousSelection && previousSelectedTourId) {
+    return { ids: [previousSelectedTourId], source: "previous_selection", ambiguousIds: [] };
   }
 
   if (ordinal) {
@@ -1828,11 +2040,27 @@ function resolveEntityIds({ message, requestType, pageContext = {}, entityState 
   }
 
   if (pageTourId) return { ids: [pageTourId], source: "page", ambiguousIds: [] };
+  if (selected.length === 1 && focusedTourId === selected[0]) {
+    return {
+      ids: selected,
+      source: "focused_selection",
+      ambiguousIds: [],
+      candidateListId: state.selectedCandidateListId || null,
+    };
+  }
+  if (selected.length === 1 && lastReferenced.length === 1 && lastReferenced[0] === selected[0]) {
+    return { ids: selected, source: "focused_selection", ambiguousIds: [], candidateListId };
+  }
   if (mentionsRecent && referenced.length === 1) return { ids: referenced, source: "recent_reference", ambiguousIds: [] };
   if (mentionsRecent && suggested.length === 1) return { ids: suggested, source: "recent_suggestion", ambiguousIds: [], candidateListId };
-  if (referenced.length === 1) return { ids: referenced, source: "recent_reference", ambiguousIds: [] };
+  if (selected.length === 1 && (!suggested.length || suggested.includes(selected[0]))) {
+    return { ids: selected, source: "selected_active", ambiguousIds: [], candidateListId };
+  }
+  if (referenced.length === 1 && (!suggested.length || suggested.includes(referenced[0]))) {
+    return { ids: referenced, source: "recent_reference", ambiguousIds: [] };
+  }
   if (suggested.length === 1) return { ids: suggested, source: "recent_suggestion", ambiguousIds: [], candidateListId };
-  const ambiguousIds = referenced.length > 1 ? referenced : suggested;
+  const ambiguousIds = suggested.length > 1 ? suggested : referenced;
   return { ids: [], source: "recent", ambiguousIds, needsClarification: true, candidateListId };
 }
 
@@ -1849,6 +2077,7 @@ module.exports = {
   SEMANTIC_STATE_KEY,
   SEMANTIC_STATE_VERSION,
   normalizeText,
+  isCancellationPolicyQuestion,
   uniqueIds,
   CONSTRAINT_META_KEY,
   constraintMeta,

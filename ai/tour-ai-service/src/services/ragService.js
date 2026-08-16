@@ -195,17 +195,20 @@ function preferenceScore(tour, preferences = {}, constraints = {}, grounding = n
     constraints.region,
     ...(constraints.interests || []),
   ].filter(Boolean).map(normalizeText));
-  const matches = (values = []) => (values || []).filter((value) => matchesPreferenceTerm(haystack, value));
-  const unmatchedByCurrent = (values = []) => matches(values || []).filter((value) => !currentAreas.has(normalizeText(value)));
+  const currentExclusions = new Set((constraints.exclusions || []).map(normalizeText));
+  const allowed = (values = []) => (values || []).filter((value) => !currentExclusions.has(normalizeText(value)));
+  const matches = (values = [], source = haystack) => allowed(values).filter((value) => matchesPreferenceTerm(source, value));
+  const unmatchedByCurrent = (values = [], source = haystack) => matches(values, source)
+    .filter((value) => !currentAreas.has(normalizeText(value)));
 
   const hasCurrentArea = currentAreas.size > 0;
   const hasCurrentStyle = Boolean(constraints.pace || (constraints.interests || []).some((value) => ["nghi duong", "kham pha", "mao hiem"].includes(normalizeText(value))));
-  if (!hasCurrentArea) score += unmatchedByCurrent(preferences.preferredDestinations || []).length * 4;
+  if (!hasCurrentArea) score += unmatchedByCurrent(preferences.preferredDestinations || [], primaryHaystack).length * 4;
   if (!hasCurrentArea && (preferences.preferredRegions || []).some((value) => normalizeText(value) === normalizeText(tour.region))) score += 3;
   if (!hasCurrentStyle) score += unmatchedByCurrent(preferences.travelStyles || []).length * 3;
   if (!hasCurrentArea) score += unmatchedByCurrent(preferences.interests || []).length * 3;
   if (!hasCurrentStyle) score += (preferences.travelStyles || []).filter((value) => matchesPreferenceTerm(primaryHaystack, value)).length;
-  if (!hasCurrentArea) score += (preferences.interests || []).filter((value) => matchesPreferenceTerm(primaryHaystack, value)).length;
+  if (!hasCurrentArea) score += allowed(preferences.interests || []).filter((value) => matchesPreferenceTerm(primaryHaystack, value)).length;
   if (constraints.accommodationRequired !== false) score += unmatchedByCurrent(preferences.accommodationPreferences || []).length * 2;
 
   if (!hasCurrentArea && matches(preferences.dislikedDestinations || []).length) score -= 5;
@@ -221,7 +224,8 @@ function preferenceScore(tour, preferences = {}, constraints = {}, grounding = n
     else if (price !== null && budget.target && Math.abs(price - budget.target) <= Math.max(500000, budget.target * 0.2)) score += 2;
   }
   const duration = preferences.durationPreference || {};
-  if (!constraints.days) {
+  const durationStatus = constraints?.[SEMANTIC_STATE_KEY]?.slots?.duration?.status;
+  if (!constraints.days && durationStatus !== "removed") {
     if (duration.minDays && duration.maxDays && tour.days >= duration.minDays && tour.days <= duration.maxDays) score += 3;
     else if (duration.targetDays && tour.days === duration.targetDays) score += 3;
   }
@@ -294,9 +298,24 @@ function withoutConstraintFields(constraints = {}, fields = []) {
     if (field === "budget") {
       delete next.budgetScope;
       delete next.totalBudget;
+      delete next.minTotalBudget;
+      delete next.maxTotalBudget;
+      delete next.targetBudget;
       delete next.minPrice;
       delete next.maxPrice;
       delete next.exactPrice;
+      delete next.approximatePrice;
+      if (next[SEMANTIC_STATE_KEY]) {
+        next[SEMANTIC_STATE_KEY] = structuredClone(next[SEMANTIC_STATE_KEY]);
+        next[SEMANTIC_STATE_KEY].slots.budget = {
+          status: "removed",
+          operator: null,
+          scope: "unspecified",
+          min: null,
+          max: null,
+          target: null,
+        };
+      }
     } else if (field === "travelers") {
       delete next.travelers;
     } else if (field === "days") {

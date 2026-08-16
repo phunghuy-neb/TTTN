@@ -9,6 +9,7 @@ const {
 } = require("./actionPolicyService");
 const {
   constraintsFromPageContext,
+  extractConstraintDelta,
   mergeConstraintState,
   buildRecommendationItems,
   buildRecommendationReply,
@@ -21,6 +22,7 @@ const {
   resolveEntityIds,
   uniqueIds,
   normalizeText,
+  isCancellationPolicyQuestion,
   getAccommodation,
   getEffectiveConstraintState,
 } = require("./travelAdvisorService");
@@ -44,6 +46,7 @@ const {
   recordProviderFailure,
 } = require("./providerHealthService");
 const { buildAiObservability, normalizeAiTraceContext } = require("./aiTraceService");
+const { PROVIDER_FAILURE_CLASSES } = require("./providerReliabilityService");
 
 const SYSTEM_INSTRUCTION = `Bạn là Trợ lý tư vấn tour của VietVoyage.
 - Chỉ dùng dữ liệu tour trong phần DỮ LIỆU MONGO HIỆN TẠI. Không tự bịa giá, số ngày, lịch khởi hành, chỗ trống, khách sạn, phương tiện, chính sách hay dịch vụ bao gồm.
@@ -105,9 +108,16 @@ function tourCards(tours = [], grounding = null) {
 }
 
 function nextEntityState(previous, patch = {}) {
+  const previousSelectedTourId = String(previous?.selectedTourId || previous?.currentTourId || "");
+  const nextSelectedTourId = String(patch.selectedTourId || patch.currentTourId || "");
+  const selectionChanged = previousSelectedTourId
+    && nextSelectedTourId
+    && previousSelectedTourId !== nextSelectedTourId;
   return {
     ...previous,
     ...patch,
+    ...(nextSelectedTourId ? { focusedTourId: nextSelectedTourId } : {}),
+    ...(selectionChanged ? { previousSelectedTourId } : {}),
     recentTourIds: uniqueIds([
       ...(patch.lastReferencedTourIds || []),
       ...(patch.lastSuggestedTourIds || []),
@@ -120,6 +130,14 @@ function activeCandidateTourIds(entityState = {}) {
   const lists = Array.isArray(entityState.candidateLists) ? entityState.candidateLists : [];
   const active = lists.find((list) => list?.candidateListId === entityState.activeCandidateListId) || lists.at(-1);
   return uniqueIds(active?.tourIds || entityState.lastSuggestedTourIds || []);
+}
+
+function historicalCandidateTourIds(entityState = {}) {
+  const lists = Array.isArray(entityState.candidateLists) ? entityState.candidateLists : [];
+  return uniqueIds([
+    ...lists.flatMap((list) => list?.tourIds || []),
+    ...(entityState.lastSuggestedTourIds || []),
+  ]);
 }
 
 function withDecision(result, value) {
@@ -411,32 +429,208 @@ function referencesTourQuestion(prompt) {
   return /\b(?:tour|hanh trinh)\b/.test(normalized);
 }
 
+function isBookingLookupQuestion(prompt) {
+  const normalized = normalizeText(prompt);
+  return /\b(?:kiem tra|tra cuu|tim|xem)\b.{0,24}\b(?:ma dat cho|ma booking|booking)\b|\b(?:ma dat cho|ma booking)\b/.test(normalized);
+}
+
 async function generateWithProvider(input, contextText) {
-  const reply = await generateChatReply(
+  const generated = await generateChatReply(
     buildGenerationPrompt({ ...input, contextText }),
-    SYSTEM_INSTRUCTION
+    SYSTEM_INSTRUCTION,
+    { includeMetadata: true }
   );
+  const reply = typeof generated === "string" ? generated : generated?.text;
+  const providerMeta = typeof generated === "object" && generated?.providerMeta
+    ? generated.providerMeta
+    : {
+      providerAttempted: true,
+      providerSucceeded: true,
+      attemptCount: 1,
+      maxAttempts: 1,
+      retryCount: 0,
+      retryDelaysMs: [],
+      failureClass: null,
+    };
   if (!String(reply || "").trim()) {
     throw new AiServiceError(ERROR_CODES.AI_RESPONSE_INVALID, "Gemini returned an empty reply", {
       status: 502,
       source: "gemini",
       retryable: true,
+      providerMeta: {
+        ...providerMeta,
+        failureClass: PROVIDER_FAILURE_CLASSES.VALIDATOR_REJECTION,
+      },
     });
   }
-  return String(reply).trim();
+  return { reply: String(reply).trim(), providerMeta };
+}
+
+function deterministicProviderStatus() {
+  return {
+    status: "skipped",
+    code: null,
+    providerAttempted: false,
+    providerSucceeded: false,
+    attemptCount: 0,
+    maxAttempts: 0,
+    retryCount: 0,
+    retryDelaysMs: [],
+    failureClass: null,
+    fallbackUsed: false,
+    finalComposer: "deterministic_renderer",
+    provenanceClass: "DETERMINISTIC_CONFIRMED",
+  };
+}
+
+function safeProviderMeta(meta = {}, { attempted = true, succeeded = false } = {}) {
+  const attemptCount = Number.isInteger(Number(meta.attemptCount))
+    ? Math.max(0, Number(meta.attemptCount))
+    : attempted ? 1 : 0;
+  const maxAttempts = Number.isInteger(Number(meta.maxAttempts))
+    ? Math.max(attemptCount, Number(meta.maxAttempts))
+    : attemptCount;
+  const retryDelaysMs = Array.isArray(meta.retryDelaysMs)
+    ? meta.retryDelaysMs.filter((value) => Number.isFinite(Number(value)) && Number(value) >= 0).map(Number)
+    : [];
+  const result = {
+    providerAttempted: meta.providerAttempted == null ? attempted : Boolean(meta.providerAttempted),
+    providerSucceeded: meta.providerSucceeded == null ? succeeded : Boolean(meta.providerSucceeded),
+    attemptCount,
+    maxAttempts,
+    retryCount: Number.isInteger(Number(meta.retryCount))
+      ? Math.max(0, Number(meta.retryCount))
+      : retryDelaysMs.length,
+    retryDelaysMs,
+    failureClass: meta.failureClass || null,
+  };
+  for (const key of [
+    "retryable",
+    "httpStatus",
+    "providerErrorStatus",
+    "retryAfterMs",
+    "quotaMetric",
+    "quotaId",
+    "quotaLocation",
+    "quotaModel",
+    "quotaValue",
+    "retryStoppedReason",
+  ]) {
+    if (meta[key] !== undefined && meta[key] !== null) result[key] = meta[key];
+  }
+  return result;
+}
+
+function providerStatusFrom(meta, {
+  status,
+  code,
+  fallbackUsed,
+  finalComposer,
+  provenanceClass,
+  failureClass,
+  providerSucceeded,
+}) {
+  const normalized = safeProviderMeta(meta, {
+    attempted: true,
+    succeeded: providerSucceeded == null ? status === "healthy" : providerSucceeded,
+  });
+  return {
+    status,
+    code,
+    ...normalized,
+    ...(failureClass !== undefined ? { failureClass } : {}),
+    ...(providerSucceeded !== undefined ? { providerSucceeded: Boolean(providerSucceeded) } : {}),
+    fallbackUsed: Boolean(fallbackUsed),
+    finalComposer,
+    provenanceClass,
+  };
+}
+
+function fallbackQuestionKind(prompt) {
+  const normalized = normalizeText(prompt);
+  if (/\b(?:bo qua|khong tham gia|o lai)\b.{0,64}\b(?:duoc\s+)?(?:khong|ko|k)\b/.test(normalized)
+    || /\bco(?: the)?\s+(?:bo qua|khong tham gia|o lai)\b/.test(normalized)) {
+    return "operational_flexibility";
+  }
+  if (/\b(?:phu hop|hop)\b/.test(normalized)) return "suitability";
+  if (/\b(?:co gi hay|co gi noi bat|diem (?:gi |nao )?(?:noi bat|dang chu y)|dang chu y|trai nghiem gi)\b/.test(normalized)) {
+    return "highlights";
+  }
+  return "facts";
+}
+
+function operationalFlexibilityFallbackReply(prompt, tours, questionKind) {
+  if (questionKind !== "operational_flexibility" || tours.length !== 1) return null;
+  const tour = tours[0];
+  const stopWords = new Set([
+    "co", "the", "bo", "qua", "khong", "tham", "gia", "o", "lai", "doan", "phan", "duoc", "nhe", "nha", "nay", "do", "kia",
+  ]);
+  const activityTokens = normalizeText(prompt)
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 3 && !stopWords.has(token));
+  const relevantDays = (tour.itinerary || []).map((day, index) => {
+    const title = String(day?.title || "").replace(/\s+/g, " ").trim();
+    const description = String(day?.description || "").replace(/\s+/g, " ").trim();
+    const evidence = [title, description].filter(Boolean).join(" — ").replace(/[.!?]+$/, "");
+    const normalizedEvidence = normalizeText(evidence);
+    const score = activityTokens.filter((token) => normalizedEvidence.split(/[^a-z0-9]+/).includes(token)).length;
+    return { dayNumber: Number(day?.dayNumber) || index + 1, evidence, score };
+  }).filter((day) => day.evidence && day.score > 0)
+    .sort((left, right) => right.score - left.score || left.dayNumber - right.dayNumber)
+    .slice(0, 2);
+  const evidenceText = relevantDays.length
+    ? `Lịch trình đã xác minh của tour **${tour.name}** có ghi ${relevantDays.map((day) => `Ngày ${day.dayNumber}: ${day.evidence}`).join("; ")}. `
+    : `Dữ liệu lịch trình hiện tại của tour **${tour.name}** không có thông tin linh hoạt cho phần hoạt động bạn hỏi. `;
+  return `${evidenceText}Tuy nhiên, dữ liệu hiện tại không nêu rằng hoạt động này được phép bỏ qua hoặc thay thế. Vì vậy mình chưa thể xác nhận khả năng bỏ qua phần đó; bạn nên xác nhận trực tiếp với VietVoyage trước khi đặt.`;
+}
+
+function itineraryFallbackReply(prompt, tours, questionKind) {
+  const normalized = normalizeText(prompt);
+  const asksForItinerary = /\b(?:lich trinh|hanh trinh|theo tung ngay|tung ngay|theo tung phan)\b/.test(normalized);
+  if (questionKind !== "suitability" && !asksForItinerary) return null;
+  if (tours.length !== 1 || !Array.isArray(tours[0]?.itinerary) || !tours[0].itinerary.length) return null;
+  const tour = tours[0];
+  const days = tour.itinerary.slice(0, 6).map((day, index) => {
+    const title = String(day?.title || "").replace(/\s+/g, " ").trim();
+    const description = String(day?.description || "").replace(/\s+/g, " ").trim();
+    const accommodation = String(day?.accommodation || "").replace(/\s+/g, " ").trim();
+    if (!title && !description && !accommodation) return null;
+    const activity = title && description ? `${title} — ${description}` : title || description;
+    const details = [
+      activity || "Chưa có mô tả hoạt động chi tiết trong dữ liệu hiện tại.",
+      accommodation ? `Lưu trú: ${accommodation}.` : null,
+    ].filter(Boolean).join(" ");
+    return `- **Ngày ${Number(day?.dayNumber) || index + 1}:** ${details}`;
+  }).filter(Boolean);
+  if (!days.length) return null;
+  const intro = questionKind === "suitability"
+    ? `Mình chưa thể kết luận chắc chắn mức độ phù hợp, nhưng đây là lịch trình đã xác minh của tour **${tour.name}** để bạn đối chiếu:`
+    : `Đây là lịch trình đã xác minh của tour **${tour.name}**:`;
+  return `${intro}\n${days.join("\n")}`;
 }
 
 function providerFallbackReply({ prompt, tours, hasVerifiedTourContext, grounding = null }) {
   if (isSiteLevelQuestion(prompt)) return siteLevelReply();
+  if (isBookingLookupQuestion(prompt) && !hasVerifiedTourContext) {
+    return "Mình chưa có dữ liệu booking đã xác minh cho mã bạn hỏi, nên không thể kết luận mã đó có tồn tại hay không. Bạn hãy kiểm tra trong mục booking của tài khoản hoặc liên hệ VietVoyage để được xác minh.";
+  }
   if (!hasVerifiedTourContext && !referencesTourQuestion(prompt)) {
     return "Mình chưa thể trả lời chắc chắn câu hỏi chung này lúc này. Bạn có thể hỏi cụ thể về tour, lịch khởi hành, booking hoặc thanh toán để mình kiểm tra từ dữ liệu hiện có.";
   }
+  const questionKind = fallbackQuestionKind(prompt);
   const selected = tours.slice(0, 6);
   if (!selected.length) return null;
+  const operationalReply = operationalFlexibilityFallbackReply(prompt, selected, questionKind);
+  if (operationalReply) return operationalReply;
+  const itineraryReply = itineraryFallbackReply(prompt, selected, questionKind);
+  if (itineraryReply) return itineraryReply;
   const lines = selected.map((tour) => {
     const facts = groundingForTour(grounding, tour);
     if (!facts || !tour?.name) return null;
     const evidence = [];
+    if (questionKind !== "facts" && Array.isArray(tour.highlights) && tour.highlights.length) {
+      evidence.push(`điểm nổi bật đã ghi nhận: ${tour.highlights.filter(Boolean).slice(0, 3).join("; ")}`);
+    }
     if (Number.isFinite(Number(facts.durationDays))) evidence.push(`${facts.durationDays} ngày`);
     if (facts.priceBasis?.amount !== null && facts.priceBasis?.amount !== undefined) {
       evidence.push(`${Number(facts.priceBasis.amount).toLocaleString("vi-VN")}đ theo dữ liệu giá đã xác minh`);
@@ -449,7 +643,12 @@ function providerFallbackReply({ prompt, tours, hasVerifiedTourContext, groundin
     return evidence.length ? `- **${tour.name}**: ${evidence.join("; ")}.` : null;
   });
   if (lines.some((line) => !line)) return null;
-  return `Nhà cung cấp AI đang tạm gián đoạn, nhưng mình vẫn giữ nguyên tập tour và dữ liệu đã xác minh:\n${lines.join("\n")}`;
+  const intro = questionKind === "suitability"
+    ? "Nhà cung cấp AI đang tạm gián đoạn nên mình chưa thể đánh giá chắc chắn mức độ phù hợp theo tiêu chí bạn vừa hỏi. Đây là dữ liệu tour đã xác minh để bạn cân nhắc:"
+    : questionKind === "highlights"
+      ? "Nhà cung cấp AI đang tạm gián đoạn nên mình chưa thể diễn giải đầy đủ điểm nổi bật theo câu hỏi của bạn. Đây là dữ liệu tour đã xác minh:"
+      : "Nhà cung cấp AI đang tạm gián đoạn, nhưng mình vẫn giữ nguyên tập tour và dữ liệu đã xác minh:";
+  return `${intro}\n${lines.join("\n")}`;
 }
 
 function groundedTourFacts(tours = [], grounding = null) {
@@ -609,8 +808,26 @@ const DESCRIPTIVE_CLAIM_RULES = [
     pattern: /(?:lộng\s+gió|đầy\s+nắng|nắng\s+đẹp|mát\s+mẻ|se\s+lạnh|khí\s+hậu\s+(?:ôn\s+hòa|mát\s+mẻ|dễ\s+chịu)|trời\s+(?:trong\s+xanh|nắng\s+đẹp)|gió\s+(?:mát|mạnh))/giu,
   },
   {
+    type: "atmosphere",
+    pattern: /(?:(?:bầu\s+)?không\s+khí|khung\s+cảnh|nhịp\s+sống)\s+(?!(?:tại|ở|quanh|trong|trên|bên|của)(?=\s|[,.;!?]|$))[\p{L}\p{N}]+(?:\s+(?!(?:tại|ở|quanh|trong|trên|bên|của|và|nhưng|là|tạo|mang|khi|với)(?=\s|[,.;!?]|$))[\p{L}\p{N}]+){0,3}(?=\s+(?:tại|ở|quanh|trong|trên|bên|của|và|nhưng|là|tạo|mang|khi|với)(?=\s|[,.;!?]|$)|[,.;!?]|$)/giu,
+    dropSegmentWhenStandalone: true,
+  },
+  {
+    type: "activity_purpose",
+    pattern: /(?:(?:để|nhằm)\s+)?(?:(?:tìm\s+hiểu|khám\s+phá|trải\s+nghiệm)\s+(?:(?:quy\s+trình|cách|đời\s+sống|công\s+việc|nghề(?:\s+nghiệp)?|kỹ\s+thuật|phương\s+pháp|bí\s+quyết|hoạt\s+động)(?=\s|[,.;!?]|$))(?:\s+(?!(?:và|nhưng|tại|ở|để|nhằm)(?=\s|[,.;!?]|$))[\p{L}\p{N}]+){0,4}|học(?:\s+hỏi)?\s+(?:cách\s+)?(?!(?:tại|ở|và|nhưng)(?=\s|[,.;!?]|$))[\p{L}\p{N}]+(?:\s+(?!(?:và|nhưng|tại|ở|để|nhằm)(?=\s|[,.;!?]|$))[\p{L}\p{N}]+){0,3})(?=\s+(?:và|nhưng|tại|ở|để|nhằm)(?=\s|[,.;!?]|$)|[,.;!?]|$)/giu,
+    dropSegmentWhenStandalone: true,
+  },
+  {
     type: "modifier",
     pattern: /(?:tuyệt\s+đẹp|đẹp\s+mê\s+hồn|ngoạn\s+mục|hùng\s+vĩ|lãng\s+mạn|sôi\s+động|yên\s+bình|đẳng\s+cấp|sang\s+trọng|nổi\s+tiếng)/giu,
+  },
+  {
+    type: "terrain",
+    pattern: /bằng\s+phẳng/giu,
+  },
+  {
+    type: "audience_suitability",
+    pattern: /(?:phù\s+hợp|thích\s+hợp|hợp|an\s+toàn|dễ\s+đi)\s+(?:với|cho)\s+(?:trẻ\s+(?:nhỏ|em|con)|gia\s+đình\s+có\s+trẻ\s+(?:nhỏ|em|con)|người\s+(?:lớn|cao)\s+tuổi|phụ\s+nữ\s+mang\s+thai|người\s+(?:khó|hạn\s+chế)\s+vận\s+động)/giu,
   },
 ];
 
@@ -634,11 +851,544 @@ function groundedTourEvidence(tour) {
 }
 
 function cleanRewrittenSegment(value) {
-  return String(value || "")
+  const cleaned = String(value || "")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\s+([,;:.])/g, "$1")
     .replace(/\(\s+/g, "(")
     .replace(/\s+\)/g, ")");
+  const emphasisMarkers = cleaned.match(/\*\*/g)?.length || 0;
+  if (emphasisMarkers % 2 === 1 && /^\s*(?:[*+-]\s+)?\*\*/u.test(cleaned)) {
+    return `${cleaned.trimEnd()}**`;
+  }
+  return cleaned;
+}
+
+function normalizeEmptyOrderedListArtifacts(reply) {
+  const lines = String(reply || "").split("\n");
+  const markerOnly = /^\s*\d+[.)]\s*(?:[*_~`]+\s*)*$/u;
+  if (!lines.some((line) => markerOnly.test(line))) return String(reply || "");
+
+  const kept = lines.filter((line) => !markerOnly.test(line));
+  let nextNumber = 0;
+  return kept.map((line) => {
+    const ordered = /^(?<indent>\s*)\d+(?<marker>[.)])(?<body>\s+.+)$/u.exec(line);
+    if (ordered) {
+      nextNumber += 1;
+      return `${ordered.groups.indent}${nextNumber}${ordered.groups.marker}${ordered.groups.body}`;
+    }
+    if (line.trim()) nextNumber = 0;
+    return line;
+  }).join("\n");
+}
+
+function descriptiveClaimIsStandalone(segment, offset) {
+  const prefix = String(segment || "").slice(0, offset);
+  const localPrefix = prefix.includes(":") ? prefix.slice(prefix.lastIndexOf(":") + 1) : prefix;
+  const normalized = normalizeText(localPrefix)
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return true;
+  return /^(?:(?:ban|du khach|khach|hanh khach|nguoi tham gia)\s+)?(?:(?:se|co the|duoc)(?:\s+duoc)?)?$/.test(normalized);
+}
+
+const ACTIVITY_HEAD_SOURCE = [
+  "tìm\\s+hiểu",
+  "học(?:\\s+hỏi)?",
+  "khám\\s+phá",
+  "trải\\s+nghiệm",
+  "vui\\s+chơi",
+  "chụp\\s+(?:ảnh|hình)",
+  "quan\\s+sát",
+  "trò\\s+chuyện",
+  "nghe",
+  "thả",
+  "tự\\s+tay\\s+làm",
+  "thực\\s+hành",
+  "tham\\s+gia",
+  "thưởng\\s+thức",
+  "mua(?:\\s+sắm)?",
+  "săn",
+  "ngắm",
+  "check[ -]?in",
+].join("|");
+
+const DIRECT_EXPERIENTIAL_HEAD_SOURCE = [
+  "tìm\\s+hiểu",
+  "học(?:\\s+hỏi)?",
+  "khám\\s+phá",
+  "trải\\s+nghiệm",
+  "vui\\s+chơi",
+  "chụp\\s+(?:ảnh|hình)",
+  "quan\\s+sát",
+  "trò\\s+chuyện",
+  "nghe",
+  "thả",
+  "ngắm",
+  "check[ -]?in",
+  "tự\\s+tay\\s+làm",
+  "thực\\s+hành",
+].join("|");
+
+const ACTIVITY_EVIDENCE_STOP_WORDS = new Set([
+  "ban", "du", "khach", "hanh", "nguoi", "tham", "gia", "se", "duoc", "co", "the",
+  "de", "nham", "va", "roi", "sau", "truoc", "khi", "tai", "o", "trong", "tren", "ben",
+  "voi", "mot", "nhung", "cac", "vao", "buoi", "ngay", "tham", "quan", "ghe", "trai",
+  "nghiem", "tim", "hieu", "thuc", "te", "chup", "anh", "hinh", "mua", "lam", "qua",
+  "hoat", "dong", "tu", "kham", "pha", "nghe", "noi", "chuyen", "xem", "check", "in",
+]);
+
+const ACTIVITY_SUPPORT_STOP_WORDS = new Set([
+  "ban", "du", "khach", "hanh", "nguoi", "tham", "gia", "se", "duoc", "co", "the",
+  "de", "nham", "va", "roi", "sau", "truoc", "khi", "tai", "o", "trong", "tren", "ben",
+  "voi", "mot", "nhung", "cac", "vao", "buoi", "ngay", "tu", "diem",
+]);
+
+function evidenceUnits(tour) {
+  const values = [
+    tour?.name,
+    tour?.location,
+    tour?.region,
+    ...textList(tour?.tags),
+    tour?.summary,
+    tour?.description,
+    ...textList(tour?.highlights),
+    ...(tour?.itinerary || []).flatMap((day) => [
+      day?.title,
+      day?.description,
+      day?.accommodation,
+      ...textList(day?.meals),
+    ]),
+    ...textList(tour?.inclusions),
+    ...textList(tour?.exclusions),
+  ];
+  return values.flatMap((value) => replySegments(value));
+}
+
+function activityEvidenceTokens(value) {
+  return new Set(
+    normalizeText(value)
+      .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+      .split(/\s+/)
+      .filter((token) => token.length > 1 && !ACTIVITY_EVIDENCE_STOP_WORDS.has(token))
+  );
+}
+
+function localActivityEvidence(segment, tour) {
+  if (!tour) return "";
+  const segmentTokens = activityEvidenceTokens(segment);
+  const scored = evidenceUnits(tour).map((unit) => {
+    const unitTokens = activityEvidenceTokens(unit);
+    const score = [...segmentTokens].filter((token) => unitTokens.has(token)).length;
+    return { unit, score };
+  });
+  const bestScore = Math.max(0, ...scored.map(({ score }) => score));
+  if (!bestScore) return groundedTourEvidence(tour);
+  return scored.filter(({ score }) => score === bestScore).map(({ unit }) => unit).join(" ");
+}
+
+function localActivityEvidenceForClaim(segment, claim, tour) {
+  if (!tour) return "";
+  const claimTokens = activityEvidenceTokens(claim);
+  if (!claimTokens.size) return localActivityEvidence(segment, tour);
+  const scored = evidenceUnits(tour).map((unit) => {
+    const unitTokens = activityEvidenceTokens(unit);
+    const score = [...claimTokens].filter((token) => unitTokens.has(token)).length;
+    return { unit, score };
+  });
+  const bestScore = Math.max(0, ...scored.map(({ score }) => score));
+  if (!bestScore) return localActivityEvidence(segment, tour);
+  return scored.filter(({ score }) => score === bestScore).map(({ unit }) => unit).join(" ");
+}
+
+function activityStarts(body, headSource = ACTIVITY_HEAD_SOURCE) {
+  const pattern = new RegExp(
+    `(?:^|,\\s*(?:(?:và|hoặc|rồi|sau\\s+đó)\\s+)?|\\s+(?:và|hoặc|rồi|sau\\s+đó)\\s+)(?<head>${headSource})(?=\\s|[,.;!?]|$)`,
+    "giu"
+  );
+  return [...String(body || "").matchAll(pattern)].map((match) => {
+    const headOffset = match[0].lastIndexOf(match.groups.head);
+    return {
+      separatorStart: match.index,
+      claimStart: match.index + headOffset,
+    };
+  });
+}
+
+function insideParenthetical(value, offset) {
+  const prefix = String(value || "").slice(0, offset);
+  return prefix.lastIndexOf("(") > prefix.lastIndexOf(")");
+}
+
+function directActivityPrefixStart(body, claimStart) {
+  const prefix = String(body || "").slice(0, claimStart);
+  const leadIn = /(?:^|[,;]\s*(?:(?:và|hoặc|rồi|sau\s+đó)\s+)?|\s+(?:và|hoặc|rồi|sau\s+đó)\s+)\s*(?:[*_~`]+\s*)?(?:(?:buổi\s+(?:sáng|trưa|chiều|tối)|sáng|trưa|chiều|tối)(?:,?\s+))?(?:(?:bạn|du khách|khách|hành khách|người tham gia)\s+)?(?:(?:sẽ|được|có thể|có cơ hội)(?:\s+được)?\s+)?(?:(?:hoàn toàn|tự do)\s+)?$/iu.exec(prefix);
+  return leadIn ? leadIn.index : claimStart;
+}
+
+function directActivityStarts(body) {
+  const pattern = new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])(?<head>${DIRECT_EXPERIENTIAL_HEAD_SOURCE})(?=\\s|[,.;!?]|$)`,
+    "giu"
+  );
+  return [...String(body || "").matchAll(pattern)]
+    .map((match) => {
+      const headOffset = match[0].lastIndexOf(match.groups.head);
+      const claimStart = match.index + headOffset;
+      return {
+        separatorStart: directActivityPrefixStart(body, claimStart),
+        claimStart,
+      };
+    })
+    .filter(({ claimStart }) => !insideParenthetical(body, claimStart));
+}
+
+function activityClaimText(body, start, end) {
+  const raw = body.slice(start, end).trim();
+  const temporal = raw.search(/\s+(?:trước|sau)\s+khi\s+/iu);
+  return (temporal >= 0 ? raw.slice(0, temporal) : raw).trim();
+}
+
+function activityEvidenceCandidates(claim) {
+  const aliases = String(claim || "").replace(/chụp\s+hình/giu, "chụp ảnh").trim();
+  const locative = aliases.search(/\s+(?:tại|ở|trong|trên|bên)\s+/iu);
+  return [...new Set([
+    aliases,
+    locative >= 0 ? aliases.slice(0, locative).trim() : "",
+  ].filter(Boolean))];
+}
+
+function activitySupportTokens(value) {
+  return normalizeText(value)
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .split(/\s+/)
+    .filter((token) => token.length > 1 && !ACTIVITY_SUPPORT_STOP_WORDS.has(token));
+}
+
+const ACTIVITY_HEAD_EVIDENCE_ALIASES = new Map([
+  ["kham pha", ["tham quan", "ghé", "thăm"]],
+  ["mua sam", ["mua"]],
+]);
+
+function activityHeadSupported(head, evidence) {
+  if (semanticPhraseMatch(evidence, head)) return true;
+  const aliases = ACTIVITY_HEAD_EVIDENCE_ALIASES.get(normalizeText(head)) || [];
+  return aliases.some((alias) => semanticPhraseMatch(evidence, alias));
+}
+
+function activityClaimSupported(claim, evidence) {
+  if (!evidence) return false;
+  const evidenceTokens = new Set(activitySupportTokens(evidence));
+  const headPattern = new RegExp(`^(?<head>${ACTIVITY_HEAD_SOURCE})(?=\\s|[,.;!?]|$)`, "iu");
+  return activityEvidenceCandidates(claim).some((candidate) => {
+    if (semanticPhraseMatch(evidence, candidate)) return true;
+    const head = headPattern.exec(candidate);
+    if (!head || !activityHeadSupported(head.groups.head, evidence)) return false;
+    const objectTokens = activitySupportTokens(candidate.slice(head[0].length));
+    return objectTokens.every((token) => evidenceTokens.has(token));
+  });
+}
+
+function activityClaimSupportedByTour(segment, claim, tour) {
+  const localEvidence = localActivityEvidenceForClaim(segment, claim, tour);
+  if (activityClaimSupported(claim, localEvidence)) return true;
+  const trailingDetail = /^(?<core>.+?)\s*\((?<detail>[^()]+)\)\s*$/u.exec(String(claim || ""));
+  if (!trailingDetail) return false;
+  const coreEvidence = localActivityEvidenceForClaim(segment, trailingDetail.groups.core, tour);
+  return activityClaimSupported(trailingDetail.groups.core, coreEvidence)
+    && semanticPhraseMatch(groundedTourEvidence(tour), trailingDetail.groups.detail);
+}
+
+function removeTextRanges(value, ranges) {
+  return [...ranges]
+    .sort((left, right) => right.start - left.start)
+    .reduce((result, range) => result.slice(0, range.start) + result.slice(range.end), value);
+}
+
+function factualPurposeLabel(value) {
+  const source = String(value || "");
+  const match = /^(?<indent>\s*)(?<listMarker>[*+-]\s+)?(?<opening>[*_~`]+)?\s*(?<label>[^:\n]{1,100}?)(?<closingBefore>[*_~`]+)?\s*:\s*/u.exec(source);
+  if (!match) return null;
+  const label = match.groups.label.replace(/[*_~`]/g, "").trim();
+  const activityHead = new RegExp(`^(?:${ACTIVITY_HEAD_SOURCE})(?=\\s|$)`, "iu");
+  if (!activityHead.test(label)) return null;
+
+  let bodyStart = match[0].length;
+  const opening = match.groups.opening || "";
+  if (opening && !match.groups.closingBefore && source.startsWith(opening, bodyStart)) {
+    bodyStart += opening.length;
+    while (/\s/u.test(source[bodyStart] || "")) bodyStart += 1;
+  }
+
+  return {
+    label,
+    bodyStart,
+    prefix: `${match.groups.indent || ""}${match.groups.listMarker || ""}`,
+  };
+}
+
+function factualPurposeLabelSupported(label, evidence) {
+  return String(label || "")
+    .split(/\s*(?:&|\/|\bvà\b)\s*/iu)
+    .filter(Boolean)
+    .every((claim) => activityClaimSupported(claim, evidence));
+}
+
+function capitalizeLeadingLetter(value) {
+  return String(value || "").replace(/^(\s*(?:(?:[*+-]\s+)|[*_~`]+\s*)*)(\p{Ll})/u, (match, prefix, letter) => (
+    `${prefix}${letter.toLocaleUpperCase("vi-VN")}`
+  ));
+}
+
+function cleanLeadingActivityRewrite(value) {
+  const withoutPunctuation = String(value || "").replace(
+    /^(\s*(?:(?:[*+-]\s+)|[*_~`]+\s*)*)[,;:]\s*/u,
+    "$1"
+  );
+  return capitalizeLeadingLetter(withoutPunctuation);
+}
+
+function orphanedActivityScaffold(value) {
+  const normalized = normalizeText(value)
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /^(?:(?:ngoai ra|ben canh do|them vao do|dong thoi)\s+)?(?:(?:lich trinh|hanh trinh|tour)(?:\s+(?:nay|do))?|(?:ban|du khach|khach|hanh khach|nguoi tham gia))\s+(?:(?:se|con|cung|co the)\s+)*(?:co\s+)?(?:hoat dong|trai nghiem|noi dung)?(?:\s+(?:khac|nay|do))?$/.test(normalized);
+}
+
+function markdownLineText(value) {
+  return String(value || "")
+    .replace(/^\s*(?:[*+-]\s+)?/u, "")
+    .replace(/[*_~`]/g, "")
+    .trim();
+}
+
+function normalizedMarkdownLine(value) {
+  return normalizeText(markdownLineText(value))
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeDayHeadingFormatting(reply) {
+  const lines = String(reply || "").split("\n");
+  const bareDayHeading = (line) => /^ngày\s+(?:\d+|thứ\s+[\p{L}\p{N}]+)\s*:\s*$/iu.test(markdownLineText(line));
+  const isDayHeading = (line) => /^ngày\s+(?:\d+|thứ\s+[\p{L}\p{N}]+)\s*:/iu.test(markdownLineText(line));
+  let rewritten = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!bareDayHeading(lines[index])) continue;
+    let contentIndex = index + 1;
+    while (contentIndex < lines.length && !lines[contentIndex].trim()) contentIndex += 1;
+    if (contentIndex >= lines.length || isDayHeading(lines[contentIndex])) continue;
+
+    const content = lines[contentIndex].replace(/^\s*(?:[*+-]\s+)?/u, "").trim();
+    if (!content) continue;
+    lines[index] = `${lines[index].trimEnd()} ${content}`;
+    lines.splice(index + 1, contentIndex - index);
+    rewritten = true;
+  }
+
+  return { reply: lines.join("\n"), rewritten };
+}
+
+function normalizeItineraryActivityBoundaries(reply, tours = []) {
+  const labels = [...new Set((tours || []).flatMap((tour) => (
+    (tour?.itinerary || []).flatMap((day) => String(day?.title || "")
+      .split(/\s*(?:—|–|\||,)\s*/u)
+      .map((value) => value.trim())
+      .filter((value) => value.length >= 3))
+  )))].sort((left, right) => right.length - left.length);
+  if (!labels.length) return { reply: String(reply || ""), rewritten: false };
+
+  const continuation = [
+    "đi\\s+bộ",
+    "ngồi\\s+thuyền",
+    "chèo\\s+thuyền",
+    "tham\\s+quan",
+    "trải\\s+nghiệm",
+    "thư\\s+giãn",
+    "chụp\\s+(?:ảnh|hình)",
+    "ngắm",
+    "bơi",
+    "đu",
+    "tắm",
+    "ghé",
+    "dạo",
+    "thưởng\\s+thức",
+  ].join("|");
+  let normalizedReply = String(reply || "");
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const boundary = new RegExp(
+      `(${escaped})(\\s+)(?=(?:${continuation})(?=\\s|[,.;!?]|$))`,
+      "giu"
+    );
+    normalizedReply = normalizedReply.replace(boundary, "$1,$2");
+  }
+  return {
+    reply: normalizedReply,
+    rewritten: normalizedReply !== String(reply || ""),
+  };
+}
+
+function normalizeRedundantExampleTails(reply) {
+  const source = String(reply || "");
+  let rewritten = false;
+  const normalizedReply = source.replace(
+    /\s+như\s*:\s*([^.!?\n]{1,120})(?=[.!?])/giu,
+    (match, examples, offset, fullReply) => {
+      const preceding = normalizeText(fullReply.slice(Math.max(0, offset - 180), offset));
+      const exampleTerms = normalizeText(examples)
+        .split(/\s*(?:,|;|\bva\b|\bhoac\b)\s*/)
+        .map((value) => value.trim())
+        .filter((value) => value.length >= 3);
+      if (!exampleTerms.length || !exampleTerms.every((term) => preceding.includes(term))) return match;
+      rewritten = true;
+      return "";
+    }
+  );
+  return { reply: normalizedReply, rewritten };
+}
+
+function malformedGeneratedReply(reply) {
+  const lines = String(reply || "").split("\n");
+  const dayHeading = (line) => /^ngày\s+(?:\d+|thứ\s+[\p{L}\p{N}]+)\s*:\s*(?<body>.*)$/iu.exec(markdownLineText(line));
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const heading = dayHeading(lines[index]);
+    if (!heading) continue;
+    let hasSectionContent = /[\p{L}\p{N}]/u.test(heading.groups.body);
+    for (let next = index + 1; next < lines.length && !dayHeading(lines[next]); next += 1) {
+      if (/[\p{L}\p{N}]/u.test(lines[next])) {
+        hasSectionContent = true;
+        break;
+      }
+    }
+    if (!hasSectionContent) return true;
+  }
+
+  for (const line of lines) {
+    const label = factualPurposeLabel(line);
+    if (!label) continue;
+    const body = normalizedMarkdownLine(line.slice(label.bodyStart));
+    if (/^(?:(?:ban|du khach|khach|hanh khach|nguoi tham gia)\s+)?(?:(?:se|co the|duoc)\s+)?(?:tham quan|check in|kham pha|trai nghiem|chup anh|chup hinh|ngam canh|tim hieu|mua sam|mua|san binh minh)$/.test(body)) {
+      return true;
+    }
+  }
+
+  return replySegments(reply).some((segment) => {
+    const normalized = normalizedMarkdownLine(segment);
+    if (/\b(?:noi\s+)?(?:(?:ban|du khach|khach|hanh khach|nguoi tham gia)\s+)?(?:co the|se|duoc)$/.test(normalized)) {
+      return true;
+    }
+    if (/\b(?:khi|neu|de|nham|va|hoac|vi|boi vi|ma|nhung)$/.test(normalized)) return true;
+    if (/\b(?:cho|voi)\s+(?:(?:nhung\s+)?(?:ai|nguoi)|du khach|khach|ban)\s+(?:yeu thich|ua thich|dam me)$/.test(normalized)) {
+      return true;
+    }
+    if (/\b(?:co|duoc)\s+(?:ket hop|bao gom)$/.test(normalized)) return true;
+    if (/\b(?:ben canh|cung voi|ket hop voi)\s+(?:(?:cac|nhung|mot so)\s+)?(?:hoat dong|trai nghiem)$/.test(normalized)) {
+      return true;
+    }
+    if (/(?:^|\s)(?:(?:buoi\s+(?:sang|trua|chieu|toi)|sang|trua|chieu|toi|trong ngay)\s+)?(?:(?:ban|du khach|khach|hanh khach|nguoi tham gia)\s+)?(?:(?:se|co the|duoc|tiep tuc|co hoat dong)\s+)*(?:tham quan|check in|kham pha|trai nghiem|chup anh|chup hinh|ngam canh|tim hieu|mua sam|mua|san binh minh|dao choi)$/.test(normalized)) {
+      return true;
+    }
+    return /^(?:(?:buoi\s+(?:sang|trua|chieu|toi)|sang|trua|chieu|toi|trong ngay)\s+)?tiep tuc$/.test(normalized);
+  });
+}
+
+function rewriteUnsupportedActivityClaims(segment, tour, context) {
+  const originalValue = String(segment || "");
+  const label = factualPurposeLabel(originalValue);
+  const rewrittenClaims = [];
+  let value = originalValue;
+
+  if (label) {
+    const evidence = localActivityEvidenceForClaim(originalValue, label.label, tour);
+    if (!factualPurposeLabelSupported(label.label, evidence)) {
+      value = capitalizeLeadingLetter(`${label.prefix}${originalValue.slice(label.bodyStart)}`);
+      rewrittenClaims.push({
+        type: "activity_label",
+        original: label.label,
+        tourId: context?.tourId || null,
+      });
+    }
+  }
+
+  const marker = /(?:^|[^\p{L}\p{N}])(?:để|nhằm)\s+/iu.exec(value);
+  let bodyStart = null;
+  let rangePrefixStart = null;
+  let directMode = false;
+
+  if (marker) {
+    const leadingLength = /^[^\p{L}\p{N}]/u.test(marker[0]) ? 1 : 0;
+    rangePrefixStart = marker.index + leadingLength;
+    bodyStart = marker.index + marker[0].length;
+  } else {
+    const colon = value.lastIndexOf(":");
+    const clauseStart = colon >= 0 ? colon + 1 : 0;
+    bodyStart = clauseStart;
+    rangePrefixStart = clauseStart;
+    directMode = true;
+  }
+
+  if (bodyStart === null) return { reply: value, rewrittenClaims, dropSegment: false };
+  const body = value.slice(bodyStart);
+  if (marker) {
+    const purposeClaim = activityClaimText(body, 0, body.length);
+    const purposeEvidence = localActivityEvidenceForClaim(value, purposeClaim, tour);
+    const activitySupported = activityClaimSupported(purposeClaim, purposeEvidence);
+    const relationSupported = /\b(?:de|nham)\b/.test(normalizeText(purposeEvidence));
+    if (activitySupported && !relationSupported) {
+      const prefix = value.slice(0, rangePrefixStart).replace(/[,;\s]+$/u, "");
+      const separator = /:\s*$/u.test(prefix) ? " " : ", ";
+      const rewritten = cleanRewrittenSegment(`${prefix}${separator}${value.slice(bodyStart).trimStart()}`);
+      rewrittenClaims.push({
+        type: "activity_relation",
+        original: marker[0].trim(),
+        tourId: context?.tourId || null,
+      });
+      return { reply: rewritten, rewrittenClaims, dropSegment: false };
+    }
+  }
+  const starts = directMode ? directActivityStarts(body) : activityStarts(body);
+  if (!starts.length || (!directMode && starts[0].claimStart !== 0)) {
+    const dropSegment = rewrittenClaims.length > 0
+      && (!/[\p{L}\p{N}]/u.test(value) || orphanedActivityScaffold(value));
+    return { reply: dropSegment ? "" : value, rewrittenClaims, dropSegment };
+  }
+
+  const unsupported = [];
+  starts.forEach((start, index) => {
+    const rawEnd = starts[index + 1]?.separatorStart ?? body.length;
+    const claim = activityClaimText(body, start.claimStart, rawEnd);
+    if (activityClaimSupportedByTour(value, claim, tour)) return;
+    const firstClaim = index === 0;
+    unsupported.push({
+      start: directMode
+        ? bodyStart + start.separatorStart
+        : firstClaim ? rangePrefixStart : bodyStart + start.separatorStart,
+      end: bodyStart + rawEnd,
+    });
+    rewrittenClaims.push({
+      type: "activity_purpose",
+      original: claim,
+      tourId: context?.tourId || null,
+    });
+  });
+
+  if (!unsupported.length) return { reply: value, rewrittenClaims, dropSegment: false };
+  const allUnsupported = unsupported.length === starts.length;
+  const standaloneDirectClaims = directMode && starts[0].separatorStart === 0;
+  const rewritten = allUnsupported && standaloneDirectClaims
+    ? ""
+    : cleanLeadingActivityRewrite(removeTextRanges(value, unsupported));
+  const dropSegment = !/[\p{L}\p{N}]/u.test(rewritten) || orphanedActivityScaffold(rewritten);
+  return {
+    reply: dropSegment ? "" : rewritten,
+    rewrittenClaims,
+    dropSegment,
+  };
 }
 
 function rewriteUnsupportedDescriptiveClaims(reply, tours, contexts) {
@@ -654,10 +1404,17 @@ function rewriteUnsupportedDescriptiveClaims(reply, tours, contexts) {
     const context = contextForFact(segment, contexts, previousContext);
     const tour = context && tourForContext(tours, context);
     const evidence = tour ? groundedTourEvidence(tour) : "";
-    let rewritten = segment;
+    const activityRewrite = rewriteUnsupportedActivityClaims(
+      segment,
+      tour,
+      context
+    );
+    let rewritten = activityRewrite.reply;
+    let dropSegment = activityRewrite.dropSegment;
+    rewrittenClaims.push(...activityRewrite.rewrittenClaims);
 
     for (const rule of DESCRIPTIVE_CLAIM_RULES) {
-      rewritten = rewritten.replace(rule.pattern, (claim) => {
+      rewritten = rewritten.replace(rule.pattern, (claim, offset) => {
         const supportTerm = rule.supportTerm ? rule.supportTerm(claim) : claim;
         if (evidence && semanticPhraseMatch(evidence, supportTerm)) return claim;
         rewrittenClaims.push({
@@ -665,16 +1422,47 @@ function rewriteUnsupportedDescriptiveClaims(reply, tours, contexts) {
           original: claim,
           tourId: context?.tourId || null,
         });
+        if (rule.dropSegmentWhenStandalone && descriptiveClaimIsStandalone(rewritten, offset)) {
+          dropSegment = true;
+        }
         return "";
       });
     }
-    pieces[index] = cleanRewrittenSegment(rewritten);
+    pieces[index] = dropSegment ? "" : cleanRewrittenSegment(rewritten);
+    if (dropSegment && /^[.!?;]+$/u.test(pieces[index + 1] || "")) pieces[index + 1] = "";
   }
 
+  const rewrittenReply = cleanRewrittenSegment(pieces.join(""));
   return {
-    reply: cleanRewrittenSegment(pieces.join("")),
+    reply: rewrittenClaims.length
+      ? normalizeEmptyOrderedListArtifacts(rewrittenReply)
+      : rewrittenReply,
     rewrittenClaims,
   };
+}
+
+function bookingClaimWithoutEvidence(reply, options = {}) {
+  if (options.bookingEvidence) return false;
+  const normalized = normalizeText(reply);
+  const bookingSignal = /\b(?:booking|ma dat cho|don dat cho)\b/.test(normalized);
+  if (!bookingSignal) return false;
+  const safeUncertainty = /\b(?:minh|toi) chua co du lieu booking\b.{0,80}\b(?:(?:de|nen khong the) ket luan)\b|\bkhong the (?:xac nhan|ket luan)\b.{0,80}\b(?:co )?ton tai hay khong\b/.test(normalized);
+  if (safeUncertainty) return false;
+  return /\b(?:he thong )?(?:chua|khong) co du lieu\b.{0,40}\b(?:booking|ma dat cho)\b|\bkhong tim thay\b.{0,40}\b(?:booking|ma dat cho)\b|\b(?:booking|ma dat cho)\b.{0,40}\b(?:khong ton tai|ton tai|da duoc tao|hop le)\b/.test(normalized);
+}
+
+function operationalChoiceClaim(segment) {
+  return /\b(?:co the|duoc)\s+(?:(?:hoan toan|tu do)\s+)?(?:lua chon|chon|bo qua|khong tham gia|o lai)\b/.test(normalizeText(segment));
+}
+
+function operationalChoiceSupported(segment, tour) {
+  if (!tour) return false;
+  const evidence = groundedTourEvidence(tour);
+  const normalizedEvidence = normalizeText(evidence);
+  if (!/\b(?:tu do|tuy chon|lua chon|khong bat buoc|co the bo qua)\b/.test(normalizedEvidence)) return false;
+  const normalizedSegment = normalizeText(segment);
+  const targetTerms = ["nghi ngoi", "o lai", "bo qua", "khong tham gia", "tham gia", "thay doi", "thay the"];
+  return targetTerms.some((term) => normalizedSegment.includes(term) && semanticPhraseMatch(evidence, term));
 }
 
 function validateGeneratedReply(reply, toursOrGrounding = [], options = {}) {
@@ -682,9 +1470,25 @@ function validateGeneratedReply(reply, toursOrGrounding = [], options = {}) {
   const grounding = !Array.isArray(toursOrGrounding) && toursOrGrounding?.byTourId
     ? toursOrGrounding
     : options.grounding || buildGroundingContract(tours, options.constraints || {}, { now: options.now });
+  if (bookingClaimWithoutEvidence(reply, options)) return { valid: false, reason: "booking_claim_without_evidence" };
   const contexts = grounding.tours || [];
   const descriptiveValidation = rewriteUnsupportedDescriptiveClaims(reply, tours, contexts);
-  const validatedReply = descriptiveValidation.reply;
+  const dayFormatting = normalizeDayHeadingFormatting(descriptiveValidation.reply);
+  const activityFormatting = normalizeItineraryActivityBoundaries(dayFormatting.reply, tours);
+  const redundantExampleFormatting = normalizeRedundantExampleTails(activityFormatting.reply);
+  const formattingValidation = {
+    reply: redundantExampleFormatting.reply,
+    rewritten: dayFormatting.rewritten || activityFormatting.rewritten || redundantExampleFormatting.rewritten,
+  };
+  const validatedReply = formattingValidation.reply;
+  if (malformedGeneratedReply(validatedReply)) {
+    return {
+      valid: false,
+      reason: descriptiveValidation.rewrittenClaims.length
+        ? "malformed_rewrite_after_unsupported_descriptive_claims"
+        : "malformed_generated_reply",
+    };
+  }
   const missingLanguage = /(?:chua co|chua neu|chua xac nhan|khong co thong tin|chua ro|khong du du lieu)/;
   let previousContext = contexts.length === 1 ? contexts[0] : null;
 
@@ -695,6 +1499,11 @@ function validateGeneratedReply(reply, toursOrGrounding = [], options = {}) {
     const derivedValidation = validateDerivedClaims(segment, contexts);
     if (!derivedValidation.valid) return derivedValidation;
     const context = contextForFact(segment, contexts, previousContext);
+    const tour = context && tourForContext(tours, context);
+
+    if (operationalChoiceClaim(segment) && !operationalChoiceSupported(segment, tour)) {
+      return { valid: false, reason: "unsupported_operational_choice" };
+    }
 
     for (const match of normalized.matchAll(/\b(\d{1,2})\s*ngay\b/g)) {
       if (!context || context.durationDays !== Number(match[1])) return { valid: false, reason: "unsupported_duration" };
@@ -719,7 +1528,6 @@ function validateGeneratedReply(reply, toursOrGrounding = [], options = {}) {
       if (Boolean(enoughFor[1]) === actuallyEnough) return { valid: false, reason: "incorrect_party_availability" };
     }
 
-    const tour = context && tourForContext(tours, context);
     if (/khach san|luu tru/.test(normalized) && !missingLanguage.test(normalized)) {
       const accommodations = tour ? getAccommodation(tour).map(normalizeText).filter(Boolean) : [];
       if (!tour || !accommodations.some((value) => normalized.includes(value))) return { valid: false, reason: "unsupported_accommodation" };
@@ -744,11 +1552,22 @@ function validateGeneratedReply(reply, toursOrGrounding = [], options = {}) {
     }
   }
   if (descriptiveValidation.rewrittenClaims.length) {
+    if (!/[\p{L}\p{N}]/u.test(validatedReply)) {
+      return { valid: false, reason: "empty_rewrite_after_unsupported_descriptive_claims" };
+    }
     return {
       valid: true,
       reason: "unsupported_descriptive_claims_rewritten",
       rewrittenReply: validatedReply,
       rewrittenClaims: descriptiveValidation.rewrittenClaims,
+    };
+  }
+  if (formattingValidation.rewritten) {
+    return {
+      valid: true,
+      reason: "generated_reply_formatting_normalized",
+      rewrittenReply: validatedReply,
+      rewrittenClaims: [],
     };
   }
   return { valid: true, reason: null };
@@ -776,6 +1595,7 @@ function hasTourNameSignal(prompt) {
 
 function hasExplicitGeneralTourLookupSignal(prompt) {
   const normalized = normalizeText(prompt);
+  if (isCancellationPolicyQuestion(normalized)) return false;
   if (!/\btour\b/.test(normalized) || !hasTourNameSignal(prompt)) return false;
   return !/(?:tour|hanh trinh) (?:nay|do|kia|vua noi|vua goi y|vua xem|vua ke|luc nay)|(?:cac|nhung|may|loat) tour/.test(normalized);
 }
@@ -861,24 +1681,32 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     pageContext: input.pageContext,
     now: input.now,
   });
+  const effectivePrompt = prepared.pendingResolution?.resolved
+    && prepared.pendingResolution.pending?.resumeMessage
+    ? prepared.pendingResolution.pending.resumeMessage
+    : input.prompt;
   let ragTrace = null;
   let validationResult = { status: "not_required", reason: null };
   const finalize = (result, value) => {
     const decided = withDecision(result, value);
-    return {
+    const completed = {
       ...decided,
+      providerStatus: decided.providerStatus || deterministicProviderStatus(),
+    };
+    return {
+      ...completed,
       observability: buildAiObservability({
         traceContext: input.traceContext,
         previousSemanticState: input.constraintState,
         pageDelta,
         extractedDelta: prepared.extractedDelta,
-        mergedSemanticState: decided.constraintState,
+        mergedSemanticState: completed.constraintState,
         decision: value,
-        pendingClarification: decided.entityState?.pendingClarification || null,
+        pendingClarification: completed.entityState?.pendingClarification || null,
         ragTrace,
-        providerStatus: decided.providerStatus,
+        providerStatus: completed.providerStatus,
         validationResult,
-        result: decided,
+        result: completed,
       }),
     };
   };
@@ -897,11 +1725,39 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     && !prepared.tourReferenceSignal
     && hasExplicitGeneralTourLookupSignal(input.prompt);
   const generalEntityQuestion = requestType === "general" && Boolean(intent.entityEvaluation);
+  const boundGeneralTourIds = uniqueIds([
+    prepared.entityState?.selectedTourId,
+    prepared.entityState?.currentTourId,
+    ...(prepared.entityState?.lastReferencedTourIds || []),
+  ]);
+  const explicitGeneralReferenceQuestion = generalEntityQuestion && prepared.tourReferenceSignal;
+  const namedDestinationDelta = generalEntityQuestion && !explicitGeneralReferenceQuestion
+    ? extractConstraintDelta(input.prompt, {}, input.now)
+    : {};
+  const hasNamedDestinationSignal = Boolean(
+    namedDestinationDelta.destination
+    || namedDestinationDelta.destinations?.length
+  );
+  const shouldResolveGeneralMention = generalEntityQuestion
+    && !explicitGeneralReferenceQuestion
+    && (boundGeneralTourIds.length === 0 || explicitGeneralTourLookup || hasNamedDestinationSignal);
   const needsTourEvidence = !input.bookingContext?.active && !preferenceCommandOnly && !conversation && !siteLevel;
-  const mentionedTours = needsTourEvidence && ((["tour_detail", "availability", "comparison"].includes(requestType) && hasTourNameSignal(input.prompt)) || explicitGeneralTourLookup || generalEntityQuestion)
+  const mentionedTours = needsTourEvidence && ((["tour_detail", "availability", "comparison"].includes(requestType) && !prepared.tourReferenceSignal && hasTourNameSignal(input.prompt)) || explicitGeneralTourLookup || shouldResolveGeneralMention)
     ? await findMentionedTours(input.prompt)
     : [];
   const mentionedTourIds = mentionedTours.map((tour) => String(tour._id));
+  const generalReferenceQuestion = generalEntityQuestion
+    && (explicitGeneralReferenceQuestion || (boundGeneralTourIds.length === 1 && mentionedTourIds.length === 0));
+  if (generalEntityQuestion && mentionedTourIds.length === 1) {
+    const selectedTourId = mentionedTourIds[0];
+    const sameSelectedTour = String(prepared.entityState?.selectedTourId || prepared.entityState?.currentTourId || "") === selectedTourId;
+    prepared.entityState = nextEntityState(prepared.entityState, {
+      selectedTourId,
+      currentTourId: selectedTourId,
+      selectedCandidateListId: sameSelectedTour ? prepared.entityState?.selectedCandidateListId || null : null,
+      lastReferencedTourIds: [selectedTourId],
+    });
+  }
   const commonOptions = {
     tourContext: input.tourContext,
     pageContext: input.pageContext,
@@ -913,17 +1769,20 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     preferenceContext: input.preferenceContext,
     ...(intent.alternativeResults ? {
       alternativeResults: true,
-      excludeTourIds: activeCandidateTourIds(prepared.entityState),
+      excludeTourIds: intent.excludeHistoricalResults
+        ? historicalCandidateTourIds(prepared.entityState)
+        : activeCandidateTourIds(prepared.entityState),
     } : {}),
   };
 
   let resolution = null;
   let ambiguousTours = [];
   let resolvedTours = [];
-  if (needsTourEvidence && ["tour_detail", "availability", "comparison"].includes(requestType)) {
+  if (needsTourEvidence && (["tour_detail", "availability", "comparison"].includes(requestType) || generalReferenceQuestion)) {
+    const resolutionRequestType = generalReferenceQuestion ? "tour_detail" : requestType;
     resolution = resolveEntityIds({
       message: input.prompt,
-      requestType,
+      requestType: resolutionRequestType,
       pageContext: input.pageContext,
       entityState: prepared.entityState,
       mentionedTourIds,
@@ -935,7 +1794,10 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       });
     }
     if (resolution.ids?.length) {
-      resolvedTours = await hydrateResolvedTours(input.prompt, resolution.ids, commonOptions);
+      resolvedTours = await hydrateResolvedTours(input.prompt, resolution.ids, {
+        ...commonOptions,
+        ...(generalReferenceQuestion ? { requestType: "tour_detail", constraintState: {} } : {}),
+      });
     }
     if (resolution.ids?.length === 1 && resolvedTours.length === 1) {
       const selectedTourId = String(resolvedTours[0]._id);
@@ -982,7 +1844,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       ? bookingEntityState({ ...prepared.entityState, ...(input.bookingContext.entityState || {}) }, input.bookingContext)
       : prepared.entityState;
     const entityPatch = {
-      pendingAction: value.operation,
+      pendingAction: pendingClarification ? value.operation : null,
       pendingClarification,
       lastRequestType: requestType,
     };
@@ -1116,7 +1978,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
 
     const tour = resolvedTours[0];
     if (value.operation === "mixed_tour_facts") {
-      const mixed = buildMixedTourFacts(tour, intent.requestedFacts, input.prompt, input.now, factualConstraints);
+      const mixed = buildMixedTourFacts(tour, intent.requestedFacts, effectivePrompt, input.now, factualConstraints);
       return finalize({
         reply: mixed.reply,
         intent,
@@ -1130,10 +1992,20 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     }
 
     if (requestType === "availability") {
-      const factual = groundingForTour(resolvedGrounding, tour) || buildTourFactualContext(tour, constraintState, { now: input.now });
-      const departures = factual.departures;
+      const nearestDepartureResolved = prepared.pendingResolution?.resolution?.value === "nearest_departure"
+        || intent.nearestDepartureRequested;
+      const availabilityGrounding = nearestDepartureResolved
+        ? buildGroundingContract(resolvedTours, Object.fromEntries(
+          Object.entries(factualConstraints).filter(([key]) => key !== "dateRange")
+        ), { now: input.now })
+        : resolvedGrounding;
+      const factual = groundingForTour(availabilityGrounding, tour) || buildTourFactualContext(tour, constraintState, { now: input.now });
+      const departures = nearestDepartureResolved ? factual.departures.slice(0, 1) : factual.departures;
+      const availabilityDateRange = nearestDepartureResolved
+        ? { label: "đợt gần nhất" }
+        : factualConstraints.dateRange;
       return finalize({
-        reply: buildAvailabilityReply(tour, factualConstraints.dateRange, departures, factual.partySize),
+        reply: buildAvailabilityReply(tour, availabilityDateRange, departures, factual.partySize),
         intent,
         constraintState,
         entityState: entityStateBase,
@@ -1143,7 +2015,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
           type: "availability",
           tourId: resolvedIds[0],
           name: tour.name,
-          dateRange: factualConstraints.dateRange,
+          dateRange: availabilityDateRange,
           departures: departures.map((departure) => ({
             departureId: departure.departureId,
             date: departure.date,
@@ -1162,7 +2034,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       }, value);
     }
 
-    const detail = buildTourDetail(tour, input.prompt, input.now, factualConstraints);
+    const detail = buildTourDetail(tour, effectivePrompt, input.now, factualConstraints);
     return finalize({
       reply: detail.reply,
       intent,
@@ -1176,7 +2048,9 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
   }
 
   const generalDirectIds = requestType === "general"
-    ? mentionedTourIds.length
+    ? resolvedTours.length
+      ? resolvedTours.map((tour) => String(tour._id))
+      : mentionedTourIds.length
       ? mentionedTourIds
       : useRecentSuggestionsForGeneral(input.prompt, prepared.entityState)
         ? prepared.entityState.lastSuggestedTourIds
@@ -1185,7 +2059,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
   const generalHasVerifiedEntity = requestType === "general" && Boolean(
     generalDirectIds.length || input.tourContext?._id || input.pageContext?.tourId
   );
-  const isolateGeneralEntityLookup = generalEntityQuestion && mentionedTourIds.length > 0;
+  const isolateGeneralEntityLookup = generalEntityQuestion && generalDirectIds.length > 0;
   const rag = await getRagContext(input.prompt, {
     ...commonOptions,
     ...(intent.entityEvaluation ? { constraintState: {} } : {}),
@@ -1213,6 +2087,14 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       rag.factualGrounding
     );
     const ids = items.map((item) => item.tourId);
+    const selectedFocusIds = uniqueIds([
+      prepared.entityState?.selectedTourId,
+      prepared.entityState?.currentTourId,
+    ]);
+    const preserveSelectedFocus = prepared.stateMutated
+      && selectedFocusIds.length === 1
+      && prepared.changedFields.length > 0
+      && prepared.changedFields.every((field) => field === "travelers");
     return finalize({
       reply: items.length
         ? buildRecommendationReply(items, effectiveConstraints, { operation: value.operation })
@@ -1225,6 +2107,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
         lastRequestType: requestType,
         lastSuggestedTourIds: ids,
         lastReferencedTourIds: ids,
+        focusedTourId: preserveSelectedFocus ? selectedFocusIds[0] : null,
       }),
       referencedTourIds: ids,
       referencedBookingIds: [],
@@ -1235,7 +2118,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       },
       tours: tourCards(rag.tours, rag.factualGrounding),
       retrievalStatus: rag.retrievalStatus || null,
-      providerStatus: { status: "skipped", code: null, fallbackUsed: false },
+      providerStatus: deterministicProviderStatus(),
       outcome: { code: items.length ? "OK" : ERROR_CODES.NO_RESULTS },
       warnings: rag.retrievalStatus?.degraded ? [ERROR_CODES.RAG_DEGRADED] : [],
     }, value);
@@ -1268,7 +2151,7 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       },
       tours: [],
       retrievalStatus: rag.retrievalStatus || null,
-      providerStatus: { status: "skipped", code: null, fallbackUsed: false },
+      providerStatus: deterministicProviderStatus(),
       outcome: { code: ERROR_CODES.NO_RESULTS },
       warnings: [],
     }, value);
@@ -1277,7 +2160,8 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
   let reply;
   let fallbackUsed = false;
   let fallbackReason = null;
-  let providerStatus = { status: "healthy", code: null, fallbackUsed: false };
+  let providerStatus = null;
+  let providerMeta = null;
   const hasVerifiedTourContext = Boolean(generalHasVerifiedEntity || mentionedTourIds.length);
   const effectiveGrounding = rag.factualGrounding || buildGroundingContract(
     rag.tours,
@@ -1285,7 +2169,9 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     { now: input.now }
   );
   try {
-    reply = await generateWithProvider({ ...input, constraintState, decision: value }, rag.contextText);
+    const generated = await generateWithProvider({ ...input, constraintState, decision: value }, rag.contextText);
+    reply = generated.reply;
+    providerMeta = generated.providerMeta;
     const validation = validateGeneratedReply(reply, rag.tours, {
       constraints: getEffectiveConstraintState(constraintState),
       grounding: effectiveGrounding,
@@ -1299,11 +2185,21 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     if (!validation.valid) {
       fallbackUsed = true;
       fallbackReason = validation.reason;
-      providerStatus = { status: "degraded", code: ERROR_CODES.AI_RESPONSE_INVALID, fallbackUsed: true };
+      providerStatus = providerStatusFrom(providerMeta, {
+        status: "degraded",
+        code: ERROR_CODES.AI_RESPONSE_INVALID,
+        fallbackUsed: true,
+        failureClass: PROVIDER_FAILURE_CLASSES.VALIDATOR_REJECTION,
+        providerSucceeded: true,
+        finalComposer: "deterministic_grounded_fallback",
+        provenanceClass: "GEMINI_FAILED_FALLBACK",
+      });
       recordProviderFailure(ERROR_CODES.AI_RESPONSE_INVALID);
       console.warn("[ai.validation.fallback]", {
         category: "unsupported_business_claim",
         reason: validation.reason,
+        attemptCount: providerStatus.attemptCount,
+        failureClass: providerStatus.failureClass,
         hydratedTourCount: rag.tours.length,
       });
       reply = providerFallbackReply({ prompt: input.prompt, tours: rag.tours, hasVerifiedTourContext, grounding: effectiveGrounding });
@@ -1312,10 +2208,20 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
           status: 502,
           source: "gemini",
           retryable: true,
+          providerMeta: providerStatus,
         });
       }
     } else {
       if (validation.rewrittenReply) reply = validation.rewrittenReply;
+      providerStatus = providerStatusFrom(providerMeta, {
+        status: "healthy",
+        code: null,
+        fallbackUsed: false,
+        failureClass: null,
+        providerSucceeded: true,
+        finalComposer: validation.rewrittenReply ? "validator_rewrite" : "gemini",
+        provenanceClass: validation.rewrittenReply ? "GEMINI_POSTPROCESSED" : "GEMINI_CONFIRMED",
+      });
       recordProviderSuccess();
     }
   } catch (error) {
@@ -1324,19 +2230,37 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       validationResult = { status: "provider_unavailable", reason: typedError.code };
     }
     fallbackUsed = true;
-    fallbackReason = typedError.code === ERROR_CODES.AI_PROVIDER_RATE_LIMITED
-      ? "provider_rate_limited"
+    fallbackReason = typedError.code === ERROR_CODES.AI_PROVIDER_QUOTA_EXHAUSTED
+      ? "provider_quota_exhausted"
+      : typedError.code === ERROR_CODES.AI_PROVIDER_RATE_LIMITED
+        ? "provider_rate_limited"
       : typedError.code === ERROR_CODES.AI_RESPONSE_INVALID
         ? "provider_response_invalid"
         : "provider_unavailable";
-    providerStatus = { status: "degraded", code: typedError.code, fallbackUsed: true };
+    providerMeta = typedError.providerMeta || error?.providerMeta || providerMeta || {};
+    providerStatus = providerStatusFrom(providerMeta, {
+      status: "degraded",
+      code: typedError.code,
+      fallbackUsed: true,
+      failureClass: providerMeta.failureClass || PROVIDER_FAILURE_CLASSES.OTHER_PROVIDER_FAILURE,
+      providerSucceeded: Boolean(providerMeta.providerSucceeded),
+      finalComposer: "deterministic_grounded_fallback",
+      provenanceClass: "GEMINI_FAILED_FALLBACK",
+    });
     recordProviderFailure(typedError.code);
-    const providerHttpStatus = Number(error?.status) || null;
     console.warn("[ai.generation.fallback]", {
-      category: error?.code === "GEMINI_TIMEOUT" ? "timeout" : providerHttpStatus === 429 ? "quota" : "generation_error",
+      category: providerStatus.failureClass,
       errorCode: typedError.code,
       errorName: error?.name || "Error",
-      providerStatus: providerHttpStatus,
+      providerStatus: providerStatus.httpStatus || null,
+      providerErrorStatus: providerStatus.providerErrorStatus || null,
+      attemptCount: providerStatus.attemptCount,
+      retryCount: providerStatus.retryCount,
+      retryAfterMs: providerStatus.retryAfterMs || null,
+      quotaMetric: providerStatus.quotaMetric || null,
+      quotaId: providerStatus.quotaId || null,
+      quotaLocation: providerStatus.quotaLocation || null,
+      quotaValue: providerStatus.quotaValue || null,
       hydratedTourCount: rag.tours.length,
     });
     reply = providerFallbackReply({ prompt: input.prompt, tours: rag.tours, hasVerifiedTourContext, grounding: effectiveGrounding });

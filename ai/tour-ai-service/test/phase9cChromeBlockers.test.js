@@ -273,11 +273,33 @@ test("BLOCKER 1: filtering and trace explanation consume the same exclusion evid
   assert.deepEqual(collectTourConstraintEvidence(hoiAn, constraints).exclusions, evidence.exclusions);
 });
 
+test("hard beach exclusion ignores an analogy-only place-name mention", () => {
+  const constraints = {
+    exclusions: ["biển"],
+    _semanticState: {
+      version: 2,
+      slots: { interests: { status: "known", values: [], excludedValues: ["biển"] } },
+    },
+  };
+  const analogyTour = {
+    ...TOURS.find((tour) => String(tour._id) === IDS.ninhBinh),
+    summary: "Cảnh quan đá vôi được ví như Hạ Long trên cạn.",
+  };
+  const evidence = collectTourConstraintEvidence(analogyTour, constraints);
+
+  assert.equal(evidence.exclusions[0].matched, false);
+  assert.equal(ragService.tourMatchesConstraints(analogyTour, constraints, {
+    requestType: "recommendation",
+    evidence,
+  }), true);
+});
+
 test("BLOCKER 2: evaluative destination questions answer while commands still search", () => {
   for (const message of [
     "Hội An có phù hợp cho người thích chụp ảnh không?",
     "Hội An có hợp với người mê chụp hình không?",
     "Hội An có gì đáng để trải nghiệm?",
+    "tour sa pa này mệt k? tôi ngại đi bộ nhiều, nói gọn thôi",
   ]) {
     const prepared = prepareActionTurn({ message });
     assert.equal(prepared.intent.requestType, "general");
@@ -289,9 +311,10 @@ test("BLOCKER 2: evaluative destination questions answer while commands still se
   assert.equal(comparison.intent.requestType, "comparison");
   assert.equal(comparison.intent.entityEvaluation, true);
 
-  const explicitTourDetail = prepareActionTurn({ message: "Tour Hội An có gì hay?" });
-  assert.equal(explicitTourDetail.intent.requestType, "tour_detail");
-  assert.equal(explicitTourDetail.intent.entityEvaluation, true);
+  const explicitNamedEvaluation = prepareActionTurn({ message: "Tour Hội An có gì hay?" });
+  assert.equal(explicitNamedEvaluation.intent.requestType, "general");
+  assert.equal(explicitNamedEvaluation.intent.entityEvaluation, true);
+  assert.deepEqual(explicitNamedEvaluation.extractedDelta, {});
 
   const contextual = prepareActionTurn({
     message: "Còn Hội An thì sao?",
@@ -385,10 +408,43 @@ test("BLOCKER 3 integration: rewritten Gemini answer remains provider-sourced wi
   assert.equal(result.decision.action, "ANSWER");
   assert.equal(result.providerStatus.status, "healthy");
   assert.equal(result.providerStatus.fallbackUsed, false);
+  assert.equal(result.providerStatus.providerAttempted, true);
+  assert.equal(result.providerStatus.providerSucceeded, true);
+  assert.equal(result.providerStatus.attemptCount, 1);
+  assert.equal(result.providerStatus.finalComposer, "validator_rewrite");
+  assert.equal(result.providerStatus.provenanceClass, "GEMINI_POSTPROCESSED");
   assert.equal(result.structuredContent.type, "grounded_answer");
   assert.equal(result.observability.validation.status, "rewritten");
   assert.doesNotMatch(result.reply, /hàng nghìn|lộng gió/i);
   assert.deepEqual(result.referencedTourIds, [IDS.hoiAn]);
+});
+
+test("Stage 3 validator rejects a provider answer when removing unsupported claims leaves no content", async () => {
+  const hoiAn = TOURS.find((tour) => String(tour._id) === IDS.hoiAn);
+  assert.deepEqual(
+    validateGeneratedReply("Tuyệt đẹp", [hoiAn]),
+    { valid: false, reason: "empty_rewrite_after_unsupported_descriptive_claims" },
+  );
+
+  providerCalls = 0;
+  providerReply = "Tuyệt đẹp";
+  const result = await generateChatAnswer({
+    prompt: "Hội An có gì đáng chú ý?",
+    pageContext: { pageType: "AI_ASSISTANT" },
+    now: NOW,
+  });
+
+  assert.equal(providerCalls, 1);
+  assert.notEqual(result.reply, providerReply);
+  assert.equal(result.providerStatus.status, "degraded");
+  assert.equal(result.providerStatus.code, "AI_RESPONSE_INVALID");
+  assert.equal(result.providerStatus.providerSucceeded, true);
+  assert.equal(result.providerStatus.failureClass, "VALIDATOR_REJECTION");
+  assert.equal(result.providerStatus.fallbackUsed, true);
+  assert.equal(result.providerStatus.finalComposer, "deterministic_grounded_fallback");
+  assert.equal(result.providerStatus.provenanceClass, "GEMINI_FAILED_FALLBACK");
+  assert.equal(result.structuredContent.type, "grounded_fallback");
+  assert.equal(result.observability.validation.status, "rejected");
 });
 
 test("generation prompt explicitly prohibits unsupported descriptive facts", () => {

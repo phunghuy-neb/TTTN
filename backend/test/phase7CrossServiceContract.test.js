@@ -153,6 +153,13 @@ test('trusted outbound AI principals are stable per authenticated user and canno
 })
 
 test('typed AI error envelopes retain provider and retrieval classifications', () => {
+  const quota = aiGatewayErrorFromResponse(503, {
+    error: { code: 'AI_PROVIDER_QUOTA_EXHAUSTED', message: 'daily quota', source: 'gemini', retryable: false },
+  })
+  assert.equal(quota.code, AI_ERROR_CODES.AI_PROVIDER_QUOTA_EXHAUSTED)
+  assert.equal(quota.status, 503)
+  assert.equal(quota.retryable, false)
+
   const provider = aiGatewayErrorFromResponse(503, {
     error: { code: 'AI_PROVIDER_RATE_LIMITED', message: 'quota', source: 'gemini', retryable: true },
   })

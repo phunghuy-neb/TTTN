@@ -6,7 +6,9 @@ const {
   mergeConstraintState,
   detectRequestType,
   hasTourReferenceSignal,
+  isCancellationPolicyQuestion,
   normalizeText,
+  ordinalFromMessage,
   uniqueIds,
 } = require("./travelAdvisorService");
 
@@ -36,32 +38,49 @@ function clarification(slot, type, allowedAnswerKinds, extra = {}) {
 
 function requestedReadOnlyFacts(message) {
   const normalized = normalizeText(message);
+  const compact = normalized.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
   const facts = [];
+  const itineraryDayToken = /\bngay\s+(?:\d{1,2}|mot|hai|ba|bon|nam|sau|bay)\b/.test(normalized);
+  const itineraryCue = /\b(?:lam gi|co gi|thi sao|the nao|hoat dong gi|di dau|tham quan gi|lich trinh|noi gon|tom tat)\b/.test(normalized);
+  const dayItineraryQuestion = (itineraryDayToken && itineraryCue)
+    || /^ngay\s+(?:\d{1,2}|mot|hai|ba|bon|nam|sau|bay)(?:\s+(?:nhe|nha|a|ha))?$/.test(compact);
+  const itineraryByDayQuestion = /\b(?:tom tat|trinh bay|viet)\b.{0,32}\b(?:tung|moi) ngay\b|\b(?:tung|moi) ngay\b.{0,32}\b(?:tom tat|xuong dong|mot dong|1 dong)\b/.test(normalized);
   if (/\b(?:con cho|con ve|con du(?: cho)?|du cho|available|het cho|cho trong)\b/.test(normalized)) facts.push("availability");
-  if (/\b(?:chinh sach huy|phi huy|dieu kien huy|huy (?:the nao|ra sao))\b/.test(normalized)) facts.push("cancellation_policy");
+  if (isCancellationPolicyQuestion(normalized)) facts.push("cancellation_policy");
   if (/\b(?:bao nhieu ngay|may ngay|thoi luong|\d{1,2}\s*ngay\s*(?:a|ha|phai khong|dung khong))\b/.test(normalized)) facts.push("duration");
-  if (/\b(?:gia bao nhieu|gia tour|bao nhieu tien|chi phi)\b/.test(normalized)) facts.push("price");
-  if (/\b(?:co gi hay|co gi noi bat|tong quan)\b/.test(normalized)) facts.push("overview");
-  if (/\b(?:khach san|luu tru|ve may bay|phuong tien|bao gom|khong bao gom|lich trinh|khuyen mai|bua an)\b/.test(normalized)) facts.push("tour_detail");
+  if (/\b(?:gia bao nhieu|gia tour|gia tong|tong gia|tong tien|tong bao nhieu|bao nhieu tien|chi phi)\b/.test(normalized)
+    || /^(?:gia(?: bao nhieu| bn)?|bao nhieu|tong(?: gia| tien)?|moi nguoi)$/.test(compact)) facts.push("price");
+  if (/\b(?:co gi hay|co gi noi bat|diem (?:gi |nao )?(?:noi bat|dang chu y)|tong quan)\b/.test(normalized)) facts.push("overview");
+  if (dayItineraryQuestion || itineraryByDayQuestion || /\b(?:khach san|luu tru|ve may bay|phuong tien|bao gom|khong bao gom|lich trinh|khuyen mai|bua an)\b/.test(normalized)) facts.push("tour_detail");
   return [...new Set(facts)];
 }
 
 function classifyTurn(message) {
   const normalized = normalizeText(message);
   const requestedFacts = requestedReadOnlyFacts(message);
-  const alternativeResults = /\b(?:(?:danh sach|lua chon|phuong an)(?: nao)? khac|(?:them|dua|cho|tim)\b.{0,20}\b(?:tour|lua chon|phuong an) khac)\b/.test(normalized);
-  const explicitSearch = alternativeResults || /\b(?:tim|goi y|de xuat|tu van)\b|\bcon tour\b.{0,24}\bthi sao\b/.test(normalized);
+  const rejectsCurrentResults = /\b(?:khong\s+(?:thich|ung|hop)\s+(?:may|nhung|cac)\s+(?:cai|tour|lua chon|phuong an)\s+(?:nay|do)|(?:may|nhung|cac)\s+(?:cai|tour|lua chon|phuong an)\s+(?:nay|do)\s+khong\s+(?:hop|on|duoc))\b/.test(normalized);
+  const alternativeResults = rejectsCurrentResults
+    || /\b(?:(?:danh sach|list|lua chon|phuong an)(?: nao)? khac|(?:them|dua|cho|tim)\b.{0,20}\b(?:tour|lua chon|phuong an) khac)\b/.test(normalized);
+  const excludeHistoricalResults = rejectsCurrentResults
+    || /\b(?:khac han|khac hoan toan|hoan toan khac)\b/.test(normalized);
+  const explicitSearch = alternativeResults || /\btim\b(?!\s+hieu\b)|\b(?:goi y|de xuat|tu van)\b|\bdanh sach\s+(?:cac\s+|vai\s+)?tour\b|\b(?:dua|cho)\s+(?:toi\s+)?(?:vai|may|mot so)?\s*(?:lua chon|phuong an)(?:\s+xem)?\b|\bcon tour\b.{0,24}\bthi sao\b/.test(normalized);
   const explicitUpdate = /\b(?:doi(?: tieu chi)? (?:thanh|sang)|sua (?:thanh|lai)|cap nhat|chuyen sang|lan nay|chuyen nay|chuyen di nay)\b/.test(normalized);
   const comparisonEvaluation = !explicitSearch && !explicitUpdate && /\b(?:nen|chon)\b.{1,80}\bhay\b.{1,80}(?:\?|$)/.test(normalized);
   const evaluativeQuestion = !explicitSearch && !explicitUpdate && Boolean(
     comparisonEvaluation
     || /\bco\s+(?:phu hop|hop|dang|gi\s+(?:hay|dang|noi bat|thu vi)|nhung gi|trai nghiem gi)\b/.test(normalized)
     || /\b(?:phu hop|hop)\s+(?:voi|cho)\b/.test(normalized)
+    || /\b(?:van\s+)?(?:phu hop|hop)\s*(?:khong|ko|k)\b/.test(normalized)
+    || /\b(?:phu hop|hop)\s+(?:[a-z0-9]+\s+){1,10}(?:khong|ko|k)\b/.test(normalized)
+    || /\b(?:phu hop|hop)\s+(?:(?:voi|cho)\s+)?(?:nguoi|gia dinh|cap doi|nhom ban|tre em|tre con)\b.{0,96}\b(?:khong|ko|k)\b/.test(normalized)
     || /\b(?:co nen|nen)\s+(?:di|chon|tham quan|trai nghiem)\b/.test(normalized)
+    || /\b(?:co(?: the)?\s+)?(?:bo qua|khong tham gia|o lai)\b.{0,60}\b(?:duoc\s+)?(?:khong|ko|k)\b/.test(normalized)
+    || /\b(?:co\s+)?(?:met|nang|de di|kho di|on)\s*(?:khong|ko|k)\b/.test(normalized)
     || /\b(?:diem den|noi nay|cho nay)\b.{0,36}\b(?:the nao|ra sao)\b/.test(normalized)
   );
   const contextualEntityQuestion = !explicitSearch && !explicitUpdate && /\bcon\b.{1,60}\bthi sao\b/.test(normalized);
   const explicitNamedTourQuestion = /\btour\s+(?!(?:nay|do|kia|vua|thu|so|dau|cuoi|truoc|sau|luc|nao|gi|co|con|gia|may|bao|the|ra|duoc|phu|hop|hay|chinh|sach|lich|khach|ve|khong)\b)[a-z0-9]/.test(normalized);
+  const anaphoricTourReference = /\b(?:tour|cai|hanh trinh|phuong an|lua chon)\s+(?:nay|do|kia)\b/.test(normalized);
   const referencesTour = /\b(?:tour|cai|hanh trinh|phuong an|lua chon)\s*(?:nay|do|kia|thu|so|\d|dau tien|mot|hai|ba)?\b/.test(normalized);
   const confirmation = /(?:\?|\ba\b|\bha\b|phai khong|dung khong|the nao|ra sao|con cho|con ve)/.test(normalized);
   const mixedReadOnly = requestedFacts.length > 1;
@@ -74,10 +93,12 @@ function classifyTurn(message) {
     explicitSearch,
     explicitUpdate,
     alternativeResults,
+    excludeHistoricalResults,
     evaluativeQuestion,
     comparisonEvaluation,
     contextualEntityQuestion,
     explicitNamedTourQuestion,
+    anaphoricTourReference,
     mutationMode: factQuery ? "none" : explicitUpdate ? "update" : explicitSearch ? "search" : "contextual",
   };
 }
@@ -94,6 +115,25 @@ function clearPendingClarification(entityState = {}) {
   const next = { ...entityState, pendingAction: null };
   delete next.pendingClarification;
   return next;
+}
+
+function clearPendingTourClarification(entityState = {}, pending = {}) {
+  const next = clearPendingClarification(entityState);
+  const candidateTourIds = uniqueIds(pending.candidateTourIds || []);
+  if (candidateTourIds.length === 1) {
+    const selectedTourId = candidateTourIds[0];
+    next.selectedTourId = selectedTourId;
+    next.currentTourId = selectedTourId;
+    next.lastReferencedTourIds = [selectedTourId];
+    next.recentTourIds = uniqueIds([selectedTourId, ...(entityState.recentTourIds || [])]);
+  }
+  return next;
+}
+
+function nearestDepartureAnswer(message) {
+  const normalized = normalizeText(message).replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (/^(?:(?:ngay|dot|lich(?: khoi hanh)?)\s+)?(?:gan nhat|som nhat)(?:\s+(?:nhe|nha|di|a|ha))?$/.test(normalized)) return true;
+  return /\b(?:ngay|dot|lich(?: khoi hanh)?|khoi hanh)\s+(?:gan nhat|som nhat)\b|\b(?:gan nhat|som nhat)\s+(?:la\s+)?(?:ngay|dot|lich(?: khoi hanh)?|khoi hanh)\b/.test(normalized);
 }
 
 function budgetScopeAnswer(message) {
@@ -128,6 +168,17 @@ function resolvePendingClarification({ message, constraintState = {}, entityStat
   if (!pending?.slot) {
     return { resolved: false, attempted: false, constraintState, entityState, pending: null };
   }
+  if (pending.slot === "entity.tour_selection"
+    && uniqueIds(pending.candidateTourIds || []).length === 0) {
+    return {
+      resolved: false,
+      attempted: false,
+      constraintState,
+      entityState: clearPendingClarification(entityState),
+      pending: null,
+      interrupted: true,
+    };
+  }
 
   if (pending.slot === "budget.scope") {
     const scope = budgetScopeAnswer(message);
@@ -152,8 +203,19 @@ function resolvePendingClarification({ message, constraintState = {}, entityStat
     const selectedId = choice ? candidateTourIds[choice - 1] : null;
     if (selectedId) {
       const nextEntityState = clearPendingClarification(entityState);
+      const previousSelectedTourId = String(entityState.selectedTourId || entityState.currentTourId || "");
+      if (previousSelectedTourId && previousSelectedTourId !== selectedId) {
+        nextEntityState.previousSelectedTourId = previousSelectedTourId;
+      }
+      nextEntityState.selectedTourId = selectedId;
+      nextEntityState.currentTourId = selectedId;
       nextEntityState.lastReferencedTourIds = [selectedId];
       nextEntityState.recentTourIds = uniqueIds([selectedId, ...(entityState.recentTourIds || [])]);
+      const activeCandidateList = (entityState.candidateLists || [])
+        .find((item) => item?.candidateListId === entityState.activeCandidateListId);
+      if (activeCandidateList?.tourIds?.map(String).includes(selectedId)) {
+        nextEntityState.selectedCandidateListId = activeCandidateList.candidateListId;
+      }
       delete nextEntityState.ambiguousTourIds;
       return {
         resolved: true,
@@ -167,6 +229,20 @@ function resolvePendingClarification({ message, constraintState = {}, entityStat
         resolution: { slot: pending.slot, value: selectedId, choice },
       };
     }
+  }
+
+  if (pending.slot === "trip.date" && nearestDepartureAnswer(message)) {
+    return {
+      resolved: true,
+      attempted: true,
+      constraintState,
+      entityState: clearPendingTourClarification(entityState, pending),
+      pending,
+      resumeRequestType: pending.requestType || "availability",
+      resumeOperation: pending.resumeOperation || "availability",
+      selectedTourIds: uniqueIds(pending.candidateTourIds || []),
+      resolution: { slot: pending.slot, value: "nearest_departure", answerKind: "relative_date" },
+    };
   }
 
   return { resolved: false, attempted: true, constraintState, entityState, pending };
@@ -185,21 +261,53 @@ function semanticActionSnapshot(state = {}) {
 
 function prepareActionTurn({ message, constraintState = {}, entityState = {}, pageContext = {}, now = new Date() }) {
   const normalizedPreviousState = mergeConstraintState(constraintState, {});
-  const pendingResolution = resolvePendingClarification({ message, constraintState, entityState });
+  let pendingResolution = resolvePendingClarification({ message, constraintState, entityState });
   let preparedConstraintState = pendingResolution.constraintState;
   let preparedEntityState = pendingResolution.entityState;
   const turn = classifyTurn(message);
-  const hasBoundEntity = Boolean(
-    preparedEntityState.selectedTourId
-    || preparedEntityState.currentTourId
-    || pageContext?.tourId
-    || preparedEntityState.lastSuggestedTourIds?.length
-    || preparedEntityState.lastReferencedTourIds?.length
-  );
+  const pendingEntityDelta = !pendingResolution.resolved
+    && pendingResolution.pending?.slot === "entity.tour_selection"
+    ? extractConstraintDelta(message, preparedConstraintState, now)
+    : null;
+  const pendingEntityStateMutated = pendingEntityDelta
+    ? semanticActionSnapshot(mergeConstraintState(preparedConstraintState, pendingEntityDelta))
+      !== semanticActionSnapshot(preparedConstraintState)
+    : false;
+  const pendingDateInterrupted = !pendingResolution.resolved
+    && pendingResolution.pending?.slot === "trip.date"
+    && (turn.explicitSearch || (turn.requestedFacts.length > 0 && !turn.requestedFacts.includes("availability")));
+  const pendingEntityInterrupted = !pendingResolution.resolved
+    && pendingResolution.pending?.slot === "entity.tour_selection"
+    && (turn.explicitSearch || (pendingEntityStateMutated && turn.requestedFacts.length === 0));
+  if (pendingDateInterrupted || pendingEntityInterrupted) {
+    preparedEntityState = pendingDateInterrupted
+      ? clearPendingTourClarification(preparedEntityState, pendingResolution.pending)
+      : clearPendingClarification(preparedEntityState);
+    pendingResolution = {
+      resolved: false,
+      attempted: false,
+      constraintState: preparedConstraintState,
+      entityState: preparedEntityState,
+      pending: null,
+      interrupted: true,
+    };
+  }
+  const hasBoundEntity = uniqueIds([
+    preparedEntityState.selectedTourId,
+    preparedEntityState.currentTourId,
+    pageContext?.tourId,
+    ...(preparedEntityState.lastSuggestedTourIds || []),
+    ...(preparedEntityState.lastReferencedTourIds || []),
+  ]).length > 0;
   const entityEvaluation = turn.evaluativeQuestion || (turn.contextualEntityQuestion && hasBoundEntity);
-  const tourReferenceSignal = hasTourReferenceSignal(message, preparedEntityState);
-  const availabilityPartyQuery = turn.factQuery && turn.requestedFacts.includes("availability")
+  const tourReferenceSignal = hasTourReferenceSignal(message, preparedEntityState) || turn.anaphoricTourReference;
+  const availabilityPartyQuery = turn.requestedFacts.includes("availability")
     && /\b(?:nguoi|khach|dua)\b/.test(turn.normalized);
+  const contextualReadOnlyQuery = hasBoundEntity
+    && turn.requestedFacts.length > 0
+    && !availabilityPartyQuery
+    && !turn.explicitSearch
+    && !turn.explicitUpdate;
   const suppressMutation = entityEvaluation || (turn.factQuery && !availabilityPartyQuery) || Boolean(pendingResolution.resolved)
     || (tourReferenceSignal && !turn.explicitUpdate && !turn.explicitSearch && !availabilityPartyQuery);
   const delta = suppressMutation ? {} : extractConstraintDelta(message, preparedConstraintState, now);
@@ -208,6 +316,8 @@ function prepareActionTurn({ message, constraintState = {}, entityState = {}, pa
     && semanticActionSnapshot(preparedConstraintState) !== semanticActionSnapshot(normalizedPreviousState);
   const changedFields = [...new Set(delta?.[CONSTRAINT_META_KEY]?.currentFields || [])];
   const normalizedMessage = normalizeText(message);
+  const multiTourOverview = turn.requestedFacts.includes("overview")
+    && /\b(?:may|cac|nhung|loat)\s+(?:tour|hanh trinh)\b/.test(normalizedMessage);
   const userConstraintEvidence = Boolean(
     delta?.[SEMANTIC_STATE_KEY]?.lastSpans?.length
     || (delta.dateRange && /\b(?:hom nay|ngay mai|ngay kia|tuan|thang|thu [2-7]|chu nhat|\d{1,2}[/-]\d{1,2})\b/.test(normalizedMessage))
@@ -222,7 +332,7 @@ function prepareActionTurn({ message, constraintState = {}, entityState = {}, pa
       attempted: true,
       pending,
       constraintState: preparedConstraintState,
-      entityState: clearPendingClarification(preparedEntityState),
+      entityState: clearPendingTourClarification(preparedEntityState, pending),
       resumeRequestType: pending.requestType || "availability",
       resumeOperation: pending.resumeOperation || "availability",
       resolution: { slot: pending.slot, value: preparedConstraintState.dateRange },
@@ -231,7 +341,9 @@ function prepareActionTurn({ message, constraintState = {}, entityState = {}, pa
   }
 
   let requestType = detectRequestType(message, preparedEntityState, delta);
-  let requestedFacts = [...turn.requestedFacts];
+  let requestedFacts = resolvedPending.resolved && Array.isArray(resolvedPending.pending?.requestedFacts)
+    ? [...new Set(resolvedPending.pending.requestedFacts)]
+    : [...turn.requestedFacts];
   const selectedTourIds = uniqueIds([
     preparedEntityState.selectedTourId,
     preparedEntityState.currentTourId,
@@ -239,15 +351,29 @@ function prepareActionTurn({ message, constraintState = {}, entityState = {}, pa
   ]);
   const contextualEntityRehydrate = stateMutated
     && selectedTourIds.length === 1
-    && turn.explicitUpdate
+    && (turn.explicitUpdate || availabilityPartyQuery)
     && !/\btieu chi\b/.test(normalizedMessage)
     && changedFields.some((field) => ["travelers", "dateRange"].includes(field))
-    && /\b(?:neu|thi sao|con du|con cho|them mot|bot mot)\b/.test(normalizedMessage);
+    && /\b(?:neu|thi sao|con du|con cho|du cho|them mot|bot mot)\b/.test(normalizedMessage);
+  const ordinalFactQuery = Boolean(ordinalFromMessage(message) && turn.requestedFacts.length);
+  const nearestDepartureRequested = nearestDepartureAnswer(message) && hasBoundEntity;
   if (resolvedPending.resolved && resolvedPending.resumeRequestType) requestType = resolvedPending.resumeRequestType;
+  else if (nearestDepartureRequested) {
+    requestType = "availability";
+    requestedFacts = ["availability"];
+  }
+  else if (multiTourOverview) requestType = "general";
+  else if (contextualReadOnlyQuery) requestType = requestedFacts.length === 1 && requestedFacts[0] === "availability"
+    ? "availability"
+    : "tour_detail";
+  else if (ordinalFactQuery) requestType = requestedFacts.length === 1 && requestedFacts[0] === "availability"
+    ? "availability"
+    : "tour_detail";
+  else if (entityEvaluation && turn.anaphoricTourReference && !hasBoundEntity) requestType = "tour_detail";
   else if (entityEvaluation && turn.comparisonEvaluation) requestType = "comparison";
-  else if (entityEvaluation && turn.explicitNamedTourQuestion) requestType = "tour_detail";
   else if (entityEvaluation) requestType = "general";
   else if (turn.alternativeResults) requestType = "recommendation";
+  else if (turn.requestedFacts.includes("tour_detail") && !turn.explicitSearch && !turn.explicitUpdate) requestType = "tour_detail";
   else if (turn.mixedReadOnly) requestType = "tour_detail";
   else if (turn.factQuery) requestType = turn.requestedFacts.length === 1 && turn.requestedFacts[0] === "availability"
     ? "availability"
@@ -258,7 +384,10 @@ function prepareActionTurn({ message, constraintState = {}, entityState = {}, pa
   }
   else if (tourReferenceSignal && ["general", "recommendation"].includes(requestType) && !turn.explicitSearch && !turn.explicitUpdate) requestType = "tour_detail";
   else if (turn.explicitSearch || turn.explicitUpdate) requestType = "recommendation";
-  else if (requestType === "general" && stateMutated && userConstraintEvidence) requestType = "recommendation";
+  else if (requestType === "general" && userConstraintEvidence
+    && (stateMutated || turn.requestedFacts.length === 0 || (availabilityPartyQuery && !hasBoundEntity))) {
+    requestType = "recommendation";
+  }
 
   return {
     previousConstraintState: normalizedPreviousState,
@@ -270,13 +399,15 @@ function prepareActionTurn({ message, constraintState = {}, entityState = {}, pa
       mutationMode: turn.mutationMode,
       requestedFacts,
       alternativeResults: turn.alternativeResults,
+      excludeHistoricalResults: turn.excludeHistoricalResults,
       entityRehydrate: contextualEntityRehydrate,
       entityEvaluation,
+      nearestDepartureRequested,
     },
     constraintState: preparedConstraintState,
     entityState: preparedEntityState,
     pendingResolution: resolvedPending,
-    turn: { ...turn, requestedFacts, entityEvaluation },
+    turn: { ...turn, message, requestedFacts, entityEvaluation },
     stateMutated,
     changedFields,
     tourReferenceSignal,
@@ -392,13 +523,17 @@ function decideAction({
           candidateTourIds,
           requestType,
           resumeOperation: prepared.turn.mixedReadOnly ? "mixed_tour_facts" : requestType,
+          resumeMessage: prepared.turn.message,
+          requestedFacts: prepared.intent.requestedFacts,
         }),
       });
     }
     if (entityResolution?.ids?.length && resolvedTourIds.length !== entityResolution.ids.length) {
       return decision(ACTIONS.ERROR, requestType, "resolved_tour_unavailable");
     }
-    if (requestType === "availability" && !prepared.constraintState.dateRange?.start && !prepared.turn.mixedReadOnly) {
+    const nearestDepartureResolved = prepared.pendingResolution?.resolution?.value === "nearest_departure"
+      || prepared.intent?.nearestDepartureRequested;
+    if (requestType === "availability" && !prepared.constraintState.dateRange?.start && !prepared.turn.mixedReadOnly && !nearestDepartureResolved) {
       return decision(ACTIONS.CLARIFY, "availability", "availability_date_required", {
         requiredMissing: ["trip.date"],
         clarification: clarification("trip.date", "date_or_range", ["date", "date_range", "relative_date"], {
@@ -417,6 +552,8 @@ function decideAction({
 
 function pendingClarificationFromDecision(value) {
   if (value?.action !== ACTIONS.CLARIFY || !value.clarification) return null;
+  if (value.clarification.slot === "entity.tour_selection"
+    && uniqueIds(value.clarification.candidateTourIds || []).length === 0) return null;
   return {
     ...value.clarification,
     reason: value.reason,

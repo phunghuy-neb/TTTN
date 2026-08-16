@@ -5,6 +5,7 @@ export const AI_ERROR_CODES = Object.freeze({
   AI_UNAVAILABLE: 'AI_UNAVAILABLE',
   AI_RESPONSE_INVALID: 'AI_RESPONSE_INVALID',
   AI_PROVIDER_UNAVAILABLE: 'AI_PROVIDER_UNAVAILABLE',
+  AI_PROVIDER_QUOTA_EXHAUSTED: 'AI_PROVIDER_QUOTA_EXHAUSTED',
   AI_PROVIDER_RATE_LIMITED: 'AI_PROVIDER_RATE_LIMITED',
   RAG_DEGRADED: 'RAG_DEGRADED',
   NO_RESULTS: 'NO_RESULTS',
@@ -18,6 +19,42 @@ export const AI_ERROR_CODES = Object.freeze({
 const ACTIONS = new Set(['SEARCH', 'ANSWER', 'CLARIFY', 'ERROR'])
 const ERROR_CODES = new Set(Object.values(AI_ERROR_CODES))
 const OUTCOME_CODES = new Set(['OK', AI_ERROR_CODES.NO_RESULTS])
+const PROVIDER_FAILURE_CLASSES = new Set([
+  'PROVIDER_QUOTA_EXHAUSTED',
+  'PROVIDER_RATE_LIMIT_TEMPORARY',
+  'PROVIDER_CAPACITY_5XX',
+  'NETWORK_TIMEOUT',
+  'VALIDATOR_REJECTION',
+  'OTHER_PROVIDER_FAILURE',
+  'UNKNOWN',
+])
+const FINAL_COMPOSERS = new Set([
+  'gemini',
+  'validator_rewrite',
+  'deterministic_grounded_fallback',
+  'deterministic_renderer',
+])
+const PROVENANCE_CLASSES = new Set([
+  'GEMINI_CONFIRMED',
+  'GEMINI_POSTPROCESSED',
+  'DETERMINISTIC_CONFIRMED',
+  'GEMINI_FAILED_FALLBACK',
+  'PROVENANCE_UNVERIFIED',
+])
+const PROVIDER_PROVENANCE_FIELDS = [
+  'status',
+  'code',
+  'providerAttempted',
+  'providerSucceeded',
+  'attemptCount',
+  'maxAttempts',
+  'retryCount',
+  'retryDelaysMs',
+  'failureClass',
+  'fallbackUsed',
+  'finalComposer',
+  'provenanceClass',
+]
 const STRUCTURED_TYPES = new Set([
   'action_error',
   'availability',
@@ -42,6 +79,7 @@ const PUBLIC_MESSAGES = Object.freeze({
   [AI_ERROR_CODES.AI_UNAVAILABLE]: 'Trợ lý AI đang tạm gián đoạn. Bạn thử lại sau ít phút nhé.',
   [AI_ERROR_CODES.AI_RESPONSE_INVALID]: 'Trợ lý AI trả về dữ liệu không hợp lệ.',
   [AI_ERROR_CODES.AI_PROVIDER_UNAVAILABLE]: 'Nhà cung cấp AI đang tạm gián đoạn.',
+  [AI_ERROR_CODES.AI_PROVIDER_QUOTA_EXHAUSTED]: 'Nhà cung cấp AI đã đạt giới hạn sử dụng hiện tại.',
   [AI_ERROR_CODES.AI_PROVIDER_RATE_LIMITED]: 'Nhà cung cấp AI đang quá tải. Bạn thử lại sau ít phút nhé.',
   [AI_ERROR_CODES.RAG_DEGRADED]: 'Hệ thống truy xuất tour đang suy giảm và chưa thể trả lời an toàn.',
   [AI_ERROR_CODES.INVALID_INPUT]: 'Yêu cầu gửi tới trợ lý AI không hợp lệ.',
@@ -221,15 +259,109 @@ function validateRetrievalStatus(value) {
   return status
 }
 
-function validateProviderStatus(value) {
+function validateProviderStatus(value, path = 'providerStatus') {
   if (value == null) return null
-  const status = object(value, 'providerStatus')
-  if (!['healthy', 'degraded', 'skipped'].includes(status.status)) invalid('providerStatus.status', 'unsupported status')
-  if (status.code != null && !ERROR_CODES.has(status.code)) invalid('providerStatus.code', 'unsupported error code')
-  if (typeof status.fallbackUsed !== 'boolean') invalid('providerStatus.fallbackUsed', 'expected boolean')
-  if (status.status === 'degraded' && status.code == null) invalid('providerStatus.code', 'required when degraded')
-  if (status.status !== 'degraded' && status.code != null) invalid('providerStatus.code', 'must be null unless degraded')
+  const status = object(value, path)
+  if (!['healthy', 'degraded', 'skipped'].includes(status.status)) invalid(`${path}.status`, 'unsupported status')
+  if (status.code != null && !ERROR_CODES.has(status.code)) invalid(`${path}.code`, 'unsupported error code')
+  if (typeof status.fallbackUsed !== 'boolean') invalid(`${path}.fallbackUsed`, 'expected boolean')
+  if (status.status === 'degraded' && status.code == null) invalid(`${path}.code`, 'required when degraded')
+  if (status.status !== 'degraded' && status.code != null) invalid(`${path}.code`, 'must be null unless degraded')
+
+  const extended = [
+    'providerAttempted',
+    'providerSucceeded',
+    'attemptCount',
+    'maxAttempts',
+    'retryCount',
+    'retryDelaysMs',
+    'failureClass',
+    'finalComposer',
+    'provenanceClass',
+  ].some((key) => Object.hasOwn(status, key))
+  if (!extended) return status
+
+  if (typeof status.providerAttempted !== 'boolean') invalid(`${path}.providerAttempted`, 'expected boolean')
+  if (typeof status.providerSucceeded !== 'boolean') invalid(`${path}.providerSucceeded`, 'expected boolean')
+  for (const key of ['attemptCount', 'maxAttempts', 'retryCount']) {
+    if (!Number.isInteger(status[key]) || status[key] < 0) invalid(`${path}.${key}`, 'expected non-negative integer')
+  }
+  if (!Array.isArray(status.retryDelaysMs)
+    || status.retryDelaysMs.some((delay) => !Number.isFinite(delay) || delay < 0)) {
+    invalid(`${path}.retryDelaysMs`, 'expected non-negative number array')
+  }
+  if (status.failureClass != null && !PROVIDER_FAILURE_CLASSES.has(status.failureClass)) {
+    invalid(`${path}.failureClass`, 'unsupported failure class')
+  }
+  if (!FINAL_COMPOSERS.has(status.finalComposer)) invalid(`${path}.finalComposer`, 'unsupported composer')
+  if (!PROVENANCE_CLASSES.has(status.provenanceClass)) invalid(`${path}.provenanceClass`, 'unsupported provenance class')
+  if (status.attemptCount > status.maxAttempts) invalid(`${path}.attemptCount`, 'cannot exceed maxAttempts')
+  if (status.retryCount !== status.retryDelaysMs.length) invalid(`${path}.retryCount`, 'must match retryDelaysMs')
+  if (status.retryCount > Math.max(0, status.attemptCount - 1)) invalid(`${path}.retryCount`, 'cannot exceed completed retries')
+
+  for (const key of ['httpStatus', 'retryAfterMs']) {
+    if (status[key] != null && (!Number.isFinite(status[key]) || status[key] < 0)) {
+      invalid(`${path}.${key}`, 'expected non-negative number')
+    }
+  }
+  for (const key of [
+    'providerErrorStatus',
+    'quotaMetric',
+    'quotaId',
+    'quotaLocation',
+    'quotaModel',
+    'quotaValue',
+    'retryStoppedReason',
+  ]) {
+    if (status[key] != null && typeof status[key] !== 'string') invalid(`${path}.${key}`, 'expected string')
+  }
+  if (status.retryable != null && typeof status.retryable !== 'boolean') invalid(`${path}.retryable`, 'expected boolean')
+
+  if (status.status === 'skipped') {
+    if (status.providerAttempted || status.providerSucceeded || status.attemptCount !== 0 || status.maxAttempts !== 0) {
+      invalid(path, 'skipped provider cannot have attempts or success')
+    }
+    if (status.fallbackUsed || status.failureClass != null) invalid(path, 'skipped provider cannot use fallback or have failure')
+    if (status.finalComposer !== 'deterministic_renderer'
+      || status.provenanceClass !== 'DETERMINISTIC_CONFIRMED') {
+      invalid(path, 'skipped provider requires deterministic provenance')
+    }
+  } else if (status.status === 'healthy') {
+    if (!status.providerAttempted || !status.providerSucceeded || status.attemptCount < 1) {
+      invalid(path, 'healthy provider requires a successful attempt')
+    }
+    if (status.fallbackUsed || status.failureClass != null) invalid(path, 'healthy provider cannot have fallback or failure')
+    if (!['gemini', 'validator_rewrite'].includes(status.finalComposer)) invalid(path, 'healthy provider composer mismatch')
+    if (!['GEMINI_CONFIRMED', 'GEMINI_POSTPROCESSED'].includes(status.provenanceClass)) {
+      invalid(path, 'healthy provider provenance mismatch')
+    }
+  } else {
+    if (!status.providerAttempted || status.attemptCount < 1) invalid(path, 'degraded provider requires an attempt')
+    if (!status.fallbackUsed || status.failureClass == null) invalid(path, 'degraded provider requires failure fallback metadata')
+    if (status.finalComposer !== 'deterministic_grounded_fallback'
+      || status.provenanceClass !== 'GEMINI_FAILED_FALLBACK') {
+      invalid(path, 'degraded provider provenance mismatch')
+    }
+  }
   return status
+}
+
+function validateProviderProvenanceConsistency(providerStatus, traceProvider) {
+  const topLevelExtended = providerStatus && Object.hasOwn(providerStatus, 'provenanceClass')
+  const traceExtended = traceProvider && Object.hasOwn(traceProvider, 'provenanceClass')
+  if (!topLevelExtended || !traceExtended) return
+
+  for (const field of PROVIDER_PROVENANCE_FIELDS) {
+    const topLevelValue = field === 'retryDelaysMs'
+      ? JSON.stringify(providerStatus[field])
+      : providerStatus[field]
+    const traceValue = field === 'retryDelaysMs'
+      ? JSON.stringify(traceProvider[field])
+      : traceProvider[field]
+    if (topLevelValue !== traceValue) {
+      invalid('providerStatus', `must match observability.provider.${field}`)
+    }
+  }
 }
 
 function validateOutcome(value) {
@@ -247,7 +379,7 @@ function validateObservability(value) {
   object(trace.semantic, 'observability.semantic')
   object(trace.action, 'observability.action')
   object(trace.retrieval, 'observability.retrieval')
-  object(trace.provider, 'observability.provider')
+  validateProviderStatus(trace.provider, 'observability.provider')
   object(trace.validation, 'observability.validation')
   object(trace.finalResponse, 'observability.finalResponse')
   return trace
@@ -273,6 +405,7 @@ export function validateAiChatResponse(value) {
   const outcome = validateOutcome(data.outcome)
   const warnings = stringArray(data.warnings || [], 'warnings')
   const observability = validateObservability(data.observability)
+  validateProviderProvenanceConsistency(providerStatus, observability?.provider)
   return {
     ...data,
     contractVersion: Number(data.contractVersion) || 0,
@@ -296,7 +429,7 @@ function statusForErrorCode(code, fallbackStatus) {
   if (code === AI_ERROR_CODES.RATE_LIMIT) return 429
   if (code === AI_ERROR_CODES.INVALID_INPUT) return 400
   if (code === AI_ERROR_CODES.AI_RESPONSE_INVALID) return 502
-  if ([AI_ERROR_CODES.AI_PROVIDER_UNAVAILABLE, AI_ERROR_CODES.AI_PROVIDER_RATE_LIMITED, AI_ERROR_CODES.RAG_DEGRADED, AI_ERROR_CODES.DB_ERROR].includes(code)) return 503
+  if ([AI_ERROR_CODES.AI_PROVIDER_UNAVAILABLE, AI_ERROR_CODES.AI_PROVIDER_QUOTA_EXHAUSTED, AI_ERROR_CODES.AI_PROVIDER_RATE_LIMITED, AI_ERROR_CODES.RAG_DEGRADED, AI_ERROR_CODES.DB_ERROR].includes(code)) return 503
   if ([AI_ERROR_CODES.BOOKING_ERROR, AI_ERROR_CODES.INTERNAL_ERROR].includes(code)) return 502
   return fallbackStatus >= 400 ? fallbackStatus : 503
 }

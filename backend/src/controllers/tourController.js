@@ -3,6 +3,7 @@
 //  CRUD Tour + Upload ảnh
 // ============================================================
 import Tour from '../models/Tour.js'
+import { validateTourNumericQuery } from '../services/tourQueryValidation.js'
 
 // ── Helper: Xây URL ảnh đầy đủ ───────────────────────────────
 const buildImageUrl = (req, filename) =>
@@ -15,20 +16,31 @@ const buildImageUrl = (req, filename) =>
 // ============================================================
 export const getTours = async (req, res) => {
   try {
+    const numericQuery = validateTourNumericQuery(req.query)
+    if (!numericQuery.valid) {
+      return res.status(400).json({
+        success: false,
+        message: numericQuery.message,
+        code: 'VALIDATION_ERROR',
+      })
+    }
+
     const {
       region,
-      minPrice,
-      maxPrice,
       days,
-      minDays,
-      maxDays,
       deals,
       status = 'published', // Mặc định chỉ lấy tour published
       sort = '-createdAt',
-      page = 1,
-      limit = 12,
       search,
     } = req.query
+    const {
+      page = 1,
+      limit = 12,
+      minPrice,
+      maxPrice,
+      minDays,
+      maxDays,
+    } = numericQuery.values
 
     // Xây filter
     const filter = {}
@@ -51,22 +63,23 @@ export const getTours = async (req, res) => {
         return res.status(400).json({
           success: false,
           message: 'Tham so "days" phai la so nguyen duong. Dung minDays/maxDays neu muon loc theo khoang.',
+          code: 'VALIDATION_ERROR',
         })
       }
       filter.days = soNgay
     }
 
     // minDays/maxDays: lọc theo khoảng, phục vụ bộ lọc dải bên Frontend
-    if (minDays || maxDays) {
+    if (minDays !== undefined || maxDays !== undefined) {
       filter.days = {}
-      if (minDays) filter.days.$gte = Number(minDays)
-      if (maxDays) filter.days.$lte = Number(maxDays)
+      if (minDays !== undefined) filter.days.$gte = minDays
+      if (maxDays !== undefined) filter.days.$lte = maxDays
     }
 
-    if (minPrice || maxPrice) {
+    if (minPrice !== undefined || maxPrice !== undefined) {
       filter.basePrice = {}
-      if (minPrice) filter.basePrice.$gte = Number(minPrice)
-      if (maxPrice) filter.basePrice.$lte = Number(maxPrice)
+      if (minPrice !== undefined) filter.basePrice.$gte = minPrice
+      if (maxPrice !== undefined) filter.basePrice.$lte = maxPrice
     }
     if (search) {
       const tuKhoa = String(search)
@@ -87,8 +100,8 @@ export const getTours = async (req, res) => {
       filter.$expr = { $gt: ['$oldPrice', '$basePrice'] }
     }
 
-    const pageNum = Math.max(1, Number(page))
-    const limitNum = Math.min(50, Math.max(1, Number(limit)))
+    const pageNum = page
+    const limitNum = Math.min(50, limit)
     const skip = (pageNum - 1) * limitNum
 
     const [tours, total] = await Promise.all([

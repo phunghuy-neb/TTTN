@@ -313,7 +313,10 @@ function hasChanges(changes) {
 }
 
 function isCommandOnly(normalized) {
-  return !/(?:tim|goi y|de xuat|tu van|so sanh|con cho|khoi hanh|booking|thanh toan|tour nay|tour do|the nao|bao nhieu)/.test(normalized)
+  const searchOrComparison = /(?:\btim\b|goi y|de xuat|tu van|so sanh|danh sach tour|vai tour)/.test(normalized)
+  const semanticUpdate = /\b(?:doi(?: tieu chi)? (?:thanh|sang)|sua (?:thanh|lai)|cap nhat|chuyen sang)\b/.test(normalized)
+  const factualOrEvaluativeQuestion = /(?:con cho|khoi hanh|booking|thanh toan|tour nay|tour do|the nao|bao nhieu|co (?:phu hop|hop)|(?:phu hop|hop) (?:voi|cho)|co gi (?:hay|noi bat)|diem (?:gi |nao )?(?:noi bat|dang chu y)|hay giai thich)/.test(normalized)
+  return !(searchOrComparison || semanticUpdate || factualOrEvaluativeQuestion)
 }
 
 export function extractPreferenceCommand(message) {

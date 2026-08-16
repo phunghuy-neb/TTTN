@@ -199,6 +199,41 @@ test("zero-result diagnosis identifies the blocking hard constraint", () => {
   assert.doesNotMatch(reply, /đáp ứng đầy đủ các điều kiện đã ghi nhận/i);
 });
 
+test("zero-result diagnosis identifies semantic total budget after party-size update", () => {
+  const daLat = tour({
+    _id: IDS.mountain,
+    name: "Đà Lạt cao nguyên",
+    location: "Đà Lạt",
+    region: "Miền Nam",
+    tags: ["núi"],
+    highlights: ["Cao nguyên"],
+    days: 3,
+    basePrice: 3_400_000,
+    departures: [{
+      _id: "64b000000000000000003102",
+      date: new Date("2026-08-21T01:00:00.000Z"),
+      availableSlots: 4,
+      totalSlots: 12,
+      price: 3_550_000,
+    }],
+  });
+  let state = {};
+  for (const message of ["2 người", "8tr tổng thôi", "không biển", "3 ngày", "tuần sau", "đổi thành 3 người"]) {
+    state = merge(state, message);
+  }
+  const effective = advisor.getEffectiveConstraintState(state);
+
+  const analysis = ragService.diagnoseZeroResult([daLat], effective, {
+    requestType: "recommendation",
+    now: NOW,
+  });
+
+  assert.deepEqual(analysis.blockingFields, ["budget"]);
+  const reply = advisor.buildZeroResultReply(effective, analysis);
+  assert.match(reply, /ngân sách.*8\.000\.000đ.*3 người/i);
+  assert.doesNotMatch(reply, /thử một ngày khởi hành khác|linh hoạt hơn về số ngày/i);
+});
+
 test("zero-result table diagnoses budget, date, destination and combined blockers", () => {
   const base = tour({ _id: IDS.expensiveMountain, name: "Sa Pa núi khám phá", location: "Sa Pa", region: "Miền Bắc", tags: ["núi"], basePrice: 4_800_000 });
   const cases = [

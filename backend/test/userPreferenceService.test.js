@@ -44,6 +44,54 @@ test('sở thích biển và nghỉ dưỡng đủ rõ được lưu structured'
   assert.equal(result.update.commandOnly, true)
 })
 
+test('Stage 3C multi-intent preference keeps the preference side effect but is not command-only', async () => {
+  const repository = memoryRepository()
+  const processPreference = createUserPreferenceService(repository)
+  const exact = await processPreference({
+    userId: 'user-a',
+    message: 'Tôi thích di sản thiên nhiên, chèo kayak và muốn ngủ đêm trên vịnh. Tour Vịnh Hạ Long — Kỳ quan trên biển có phù hợp không? Hãy giải thích ngắn gọn dựa trên lịch trình hiện có.',
+  })
+
+  assert.equal(exact.update.active, true)
+  assert.equal(exact.update.commandOnly, false)
+  assert.deepEqual(exact.profile.preferredDestinations, ['Hạ Long'])
+  assert.ok(exact.profile.interests.includes('thiên nhiên'))
+
+  for (const message of [
+    'Tôi thích chụp ảnh và văn hóa. Hội An có hợp với tôi không?',
+    'Tôi thích khám phá thiên nhiên. Tour này có điểm gì đáng chú ý?',
+    'Tôi thích nghỉ dưỡng. Tour này lịch trình có nhẹ không?',
+    'Tôi thích biển, à đổi thành 3 người.',
+  ]) {
+    const result = extractPreferenceCommand(message)
+    assert.equal(result.active, true, message)
+    assert.equal(result.commandOnly, false, message)
+  }
+})
+
+test('Stage 3C preserves pure preference commands and explicit search precedence', () => {
+  for (const message of [
+    'Tôi thích núi.',
+    'Tôi thích đi biển.',
+    'Từ giờ ưu tiên tour nghỉ dưỡng cho tôi.',
+    'Ghi nhớ là tôi thích tour núi.',
+    'Tôi không thích Đà Lạt.',
+  ]) {
+    const result = extractPreferenceCommand(message)
+    assert.equal(result.active, true, message)
+    assert.equal(result.commandOnly, true, message)
+  }
+
+  for (const message of [
+    'Tôi thích núi, tìm cho tôi tour phù hợp.',
+    'Tôi thích chụp ảnh, gợi ý vài tour đi.',
+  ]) {
+    const result = extractPreferenceCommand(message)
+    assert.equal(result.active, true, message)
+    assert.equal(result.commandOnly, false, message)
+  }
+})
+
 test('constraint tạm thời không biến thành preference dài hạn', () => {
   assert.equal(extractPreferenceCommand('Chuyến này dưới 5 triệu.').active, false)
   assert.equal(extractPreferenceCommand('Lần này tôi muốn đi núi.').active, false)

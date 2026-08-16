@@ -91,7 +91,7 @@ services:
     profiles: ["ai"]
     image: chromadb/chroma:latest
     volumes:
-      - chroma_data:/chroma/chroma
+      - chroma_data:/data
     restart: unless-stopped
 
 volumes:

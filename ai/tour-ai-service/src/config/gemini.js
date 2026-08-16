@@ -1,4 +1,8 @@
 const { GoogleGenAI } = require("@google/genai");
+const {
+  PROVIDER_FAILURE_CLASSES,
+  executeProviderRequest,
+} = require("../services/providerReliabilityService");
 
 /**
  * Module dùng chung để gọi Gemini API.
@@ -11,31 +15,70 @@ const { GoogleGenAI } = require("@google/genai");
  */
 
 let client = null;
+const DEFAULT_SHOPAIKEY_GEMINI_BASE_URL = "https://api.shopaikey.com";
 
 function positiveTimeout(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function withTimeout(promise, timeoutMs, operation) {
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function withTimeout(value, timeoutMs, operation) {
+  const controller = new AbortController();
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
+      controller.abort();
       const error = new Error(`${operation} timed out`);
       error.code = "GEMINI_TIMEOUT";
       reject(error);
     }, timeoutMs);
   });
+  const promise = typeof value === "function"
+    ? Promise.resolve().then(() => value(controller.signal))
+    : value;
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function resolveGeminiProviderConfig(env = process.env) {
+  const mode = String(env.GEMINI_PROVIDER_MODE || "google").trim().toLowerCase();
+  if (mode === "shopaikey") {
+    return {
+      mode,
+      keyName: "SHOPAIKEY_API_KEY",
+      apiKey: String(env.SHOPAIKEY_API_KEY || "").trim(),
+      baseUrl: String(
+        env.SHOPAIKEY_GEMINI_BASE_URL || DEFAULT_SHOPAIKEY_GEMINI_BASE_URL
+      ).trim().replace(/\/+$/, ""),
+    };
+  }
+  return {
+    mode: "google",
+    keyName: "GEMINI_API_KEY",
+    apiKey: String(env.GEMINI_API_KEY || "").trim(),
+    baseUrl: null,
+  };
+}
+
+function buildGeminiClientOptions(env = process.env) {
+  const provider = resolveGeminiProviderConfig(env);
+  const apiKey = provider.apiKey;
+  if (!apiKey) {
+    throw new Error(`Thiếu biến môi trường ${provider.keyName} trong file .env`);
+  }
+  return {
+    apiKey,
+    ...(provider.baseUrl ? { httpOptions: { baseUrl: provider.baseUrl } } : {}),
+  };
 }
 
 function getClient() {
   if (!client) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error("Thiếu biến môi trường GEMINI_API_KEY trong file .env");
-    }
-    client = new GoogleGenAI({ apiKey });
+    client = new GoogleGenAI(buildGeminiClientOptions());
   }
   return client;
 }
@@ -46,23 +89,57 @@ function getClient() {
  * @param {string} [systemInstruction] - Chỉ dẫn hệ thống (VD: yêu cầu trả lời dựa trên context)
  * @returns {Promise<string>}
  */
-async function generateChatReply(prompt, systemInstruction) {
-  const ai = getClient();
+async function generateChatReply(prompt, systemInstruction, options = {}) {
+  const ai = options.client || getClient();
   const model = process.env.GEMINI_CHAT_MODEL || "gemini-3.5-flash";
-
-  const response = await withTimeout(
-    ai.models.generateContent({
+  const totalTimeoutMs = positiveTimeout(
+    options.totalTimeoutMs ?? process.env.GEMINI_GENERATION_TIMEOUT_MS,
+    20_000
+  );
+  const configuredAttemptTimeout = options.attemptTimeoutMs
+    ?? process.env.GEMINI_PROVIDER_ATTEMPT_TIMEOUT_MS;
+  const result = await executeProviderRequest({
+    request: ({ signal }) => ai.models.generateContent({
       model,
       contents: prompt,
-      ...(systemInstruction
-        ? { config: { systemInstruction } }
-        : {}),
+      config: {
+        ...(systemInstruction ? { systemInstruction } : {}),
+        abortSignal: signal,
+      },
     }),
-    positiveTimeout(process.env.GEMINI_GENERATION_TIMEOUT_MS, 20_000),
-    "Gemini generation"
-  );
+    maxAttempts: positiveInteger(
+      options.maxAttempts ?? process.env.GEMINI_PROVIDER_MAX_ATTEMPTS,
+      2
+    ),
+    totalTimeoutMs,
+    attemptTimeoutMs: configuredAttemptTimeout == null
+      ? null
+      : positiveTimeout(configuredAttemptTimeout, null),
+    baseDelayMs: positiveTimeout(
+      options.baseDelayMs ?? process.env.GEMINI_PROVIDER_BACKOFF_BASE_MS,
+      250
+    ),
+    jitterRatio: options.jitterRatio
+      ?? Number(process.env.GEMINI_PROVIDER_JITTER_RATIO || 0.2),
+    sleep: options.sleep,
+    random: options.random,
+    now: options.now,
+    operation: "Gemini generation",
+  });
 
-  return response.text?.trim() || "";
+  const text = result.value?.text?.trim() || "";
+  if (!text) {
+    const error = new Error("Gemini returned an empty response");
+    error.name = "GeminiEmptyResponseError";
+    error.code = "GEMINI_EMPTY_RESPONSE";
+    error.providerMeta = {
+      ...result.providerMeta,
+      failureClass: PROVIDER_FAILURE_CLASSES.VALIDATOR_REJECTION,
+    };
+    throw error;
+  }
+
+  return options.includeMetadata ? { text, providerMeta: result.providerMeta } : text;
 }
 
 /**
@@ -84,18 +161,30 @@ async function embedText(text) {
 async function embedBatch(texts) {
   const ai = getClient();
   const model = process.env.GEMINI_EMBEDDING_MODEL || "gemini-embedding-001";
-
-  const response = await withTimeout(
-    ai.models.embedContent({
+  const timeoutMs = positiveTimeout(process.env.GEMINI_EMBEDDING_TIMEOUT_MS, 12_000);
+  const result = await executeProviderRequest({
+    request: ({ signal }) => ai.models.embedContent({
       model,
       contents: texts,
+      config: { abortSignal: signal },
     }),
-    positiveTimeout(process.env.GEMINI_EMBEDDING_TIMEOUT_MS, 12_000),
-    "Gemini embedding"
-  );
+    maxAttempts: 1,
+    totalTimeoutMs: timeoutMs,
+    attemptTimeoutMs: timeoutMs,
+    operation: "Gemini embedding",
+  });
+  const response = result.value;
 
   // SDK trả về mảng embeddings tương ứng thứ tự input
   return response.embeddings.map((e) => e.values);
 }
 
-module.exports = { generateChatReply, embedText, embedBatch, getClient, withTimeout };
+module.exports = {
+  generateChatReply,
+  embedText,
+  embedBatch,
+  getClient,
+  withTimeout,
+  buildGeminiClientOptions,
+  resolveGeminiProviderConfig,
+};

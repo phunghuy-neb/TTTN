@@ -109,6 +109,99 @@ test('trace redaction preserves lifecycle identity without exposing messages or 
   assert.equal('accessToken' in trace, false)
 })
 
+test('Stage 3 provider provenance survives the cross-service contract unchanged', () => {
+  const response = validResponse()
+  response.providerStatus = {
+    status: 'degraded',
+    code: 'AI_PROVIDER_QUOTA_EXHAUSTED',
+    providerAttempted: true,
+    providerSucceeded: false,
+    attemptCount: 1,
+    maxAttempts: 2,
+    retryCount: 0,
+    retryDelaysMs: [],
+    failureClass: 'PROVIDER_QUOTA_EXHAUSTED',
+    retryable: false,
+    httpStatus: 429,
+    providerErrorStatus: 'RESOURCE_EXHAUSTED',
+    retryAfterMs: 47_000,
+    quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+    quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+    quotaLocation: 'global',
+    quotaModel: 'gemini-3.5-flash',
+    quotaValue: '20',
+    fallbackUsed: true,
+    finalComposer: 'deterministic_grounded_fallback',
+    provenanceClass: 'GEMINI_FAILED_FALLBACK',
+  }
+  response.observability.provider = structuredClone(response.providerStatus)
+  response.warnings = ['AI_PROVIDER_QUOTA_EXHAUSTED']
+
+  const validated = validateAiChatResponse(response)
+  assert.deepEqual(validated.providerStatus, response.providerStatus)
+  assert.deepEqual(validated.observability.provider, response.providerStatus)
+})
+
+test('Stage 3 provider provenance rejects top-level and observability contradictions', () => {
+  const response = validResponse()
+  response.providerStatus = {
+    status: 'healthy',
+    code: null,
+    providerAttempted: true,
+    providerSucceeded: true,
+    attemptCount: 1,
+    maxAttempts: 2,
+    retryCount: 0,
+    retryDelaysMs: [],
+    failureClass: null,
+    fallbackUsed: false,
+    finalComposer: 'gemini',
+    provenanceClass: 'GEMINI_CONFIRMED',
+  }
+  response.observability.provider = {
+    status: 'degraded',
+    code: 'AI_PROVIDER_QUOTA_EXHAUSTED',
+    providerAttempted: true,
+    providerSucceeded: false,
+    attemptCount: 1,
+    maxAttempts: 2,
+    retryCount: 0,
+    retryDelaysMs: [],
+    failureClass: 'PROVIDER_QUOTA_EXHAUSTED',
+    fallbackUsed: true,
+    finalComposer: 'deterministic_grounded_fallback',
+    provenanceClass: 'GEMINI_FAILED_FALLBACK',
+  }
+
+  assert.throws(
+    () => validateAiChatResponse(response),
+    (error) => error instanceof AiResponseInvalidError && /providerStatus.*observability\.provider/.test(error.detail)
+  )
+})
+
+test('Stage 3 provider provenance rejects contradictory skipped and attempt metadata', () => {
+  const response = validResponse()
+  response.providerStatus = {
+    status: 'skipped',
+    code: null,
+    providerAttempted: true,
+    providerSucceeded: false,
+    attemptCount: 1,
+    maxAttempts: 1,
+    retryCount: 0,
+    retryDelaysMs: [],
+    failureClass: null,
+    fallbackUsed: false,
+    finalComposer: 'deterministic_renderer',
+    provenanceClass: 'DETERMINISTIC_CONFIRMED',
+  }
+
+  assert.throws(
+    () => validateAiChatResponse(response),
+    (error) => error instanceof AiResponseInvalidError && /providerStatus/.test(error.detail)
+  )
+})
+
 test('backend validates the additive observability schema before persistence', () => {
   assert.equal(validateAiChatResponse(validResponse()).observability.schemaVersion, 1)
   const invalid = validResponse()
