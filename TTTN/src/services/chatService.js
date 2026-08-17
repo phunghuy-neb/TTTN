@@ -65,3 +65,11 @@ export async function clearChatHistory(conversationId = '') {
     auth: true,
   })
 }
+
+export async function deleteConversation(id) {
+  return request(`/chat/conversations/${id}`, {
+    method: 'DELETE',
+    auth: true,
+  })
+}
+

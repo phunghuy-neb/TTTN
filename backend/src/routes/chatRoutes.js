@@ -10,6 +10,7 @@ import {
   getConversationMessages,
   getChatHistory,
   deleteChatHistory,
+  deleteConversation,
 } from '../controllers/chatController.js'
 import { protect } from '../middleware/auth.js'
 import { rateLimit } from '../middleware/security.js'
@@ -36,5 +37,8 @@ router.get('/history', getChatHistory)
 
 // DELETE /api/chat/history  → xóa hội thoại của mình
 router.delete('/history', deleteChatHistory)
+
+// DELETE /api/chat/conversations/:id → Xóa hoàn toàn một hội thoại
+router.delete('/conversations/:id', deleteConversation)
 
 export default router

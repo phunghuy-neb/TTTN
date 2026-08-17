@@ -1,5 +1,6 @@
-import { PlusIcon } from './ChatIcons.jsx'
-
+import { useState } from 'react'
+import { PlusIcon, TrashIcon } from './ChatIcons.jsx'
+import Modal from '../ui/Modal.jsx'
 function formatTime(value) {
   if (!value) return ''
   const date = new Date(value)
@@ -24,7 +25,9 @@ export default function ConversationList({
   creating = false,
   historyPanel = false,
   className = '',
+  onDelete,
 }) {
+  const [deletingId, setDeletingId] = useState(null)
   const visible = typeof limit === 'number' ? conversations.slice(0, limit) : conversations
 
   return (
@@ -55,11 +58,12 @@ export default function ConversationList({
           {visible.map((conversation) => {
             const active = conversation._id === activeConversationId
             return (
-              <button
+              <div
                 key={conversation._id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 onClick={() => onSelect(conversation._id)}
-                className={`flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition ${
+                className={`group flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition cursor-pointer ${
                   active
                     ? historyPanel
                       ? 'border-jade bg-white text-teal shadow-soft'
@@ -76,7 +80,20 @@ export default function ConversationList({
                 <span className={`shrink-0 text-[11px] ${historyPanel ? 'font-medium text-[#53635F]' : 'text-muted'}`}>
                   {formatTime(conversation.lastMessageAt)}
                 </span>
-              </button>
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setDeletingId(conversation._id)
+                    }}
+                    className="shrink-0 rounded p-1 text-muted opacity-0 transition hover:bg-coral/10 hover:text-coral group-hover:opacity-100"
+                    title="Xóa lịch sử chat"
+                  >
+                    <TrashIcon className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
             )
           })}
           {hasMore && onLoadMore && (
@@ -91,6 +108,33 @@ export default function ConversationList({
           )}
         </div>
       )}
+
+      <Modal
+        open={!!deletingId}
+        title="Xóa lịch sử chat"
+        onClose={() => setDeletingId(null)}
+        actions={
+          <>
+            <button
+              onClick={() => setDeletingId(null)}
+              className="rounded-lg px-4 py-2 text-sm font-semibold text-ink hover:bg-line/50 transition"
+            >
+              Hủy
+            </button>
+            <button
+              onClick={() => {
+                onDelete(deletingId)
+                setDeletingId(null)
+              }}
+              className="rounded-lg bg-coral px-4 py-2 text-sm font-semibold text-white hover:bg-coralD transition"
+            >
+              Xóa ngay
+            </button>
+          </>
+        }
+      >
+        Bạn có chắc chắn muốn xóa lịch sử cuộc trò chuyện này không? Hành động này không thể hoàn tác.
+      </Modal>
     </div>
   )
 }

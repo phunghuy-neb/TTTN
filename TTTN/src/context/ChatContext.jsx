@@ -5,6 +5,7 @@ import {
   getConversationMessages,
   getConversations,
   sendChatMessage,
+  deleteConversation as deleteConversationRequest,
 } from '../services/chatService.js'
 import {
   mergeConversationPage,
@@ -331,6 +332,22 @@ export function ChatProvider({ children }) {
     [createNewConversation, sending, user]
   )
 
+  const removeConversation = useCallback(async (conversationId) => {
+    if (!user || !conversationId) return { success: false }
+    const res = await deleteConversationRequest(conversationId)
+    if (res.success) {
+      setConversations((items) => items.filter((item) => item._id !== conversationId))
+      if (activeConversationIdRef.current === conversationId) {
+        activeConversationIdRef.current = ''
+        setActiveConversationId('')
+        setMessages([])
+        setMessagePagination(emptyPagination(MESSAGE_PAGE_LIMIT))
+        localStorage.removeItem(storageKey(user._id))
+      }
+    }
+    return res
+  }, [user])
+
   const activeConversation =
     conversations.find((conversation) => conversation._id === activeConversationId) || null
 
@@ -355,6 +372,7 @@ export function ChatProvider({ children }) {
         createNewConversation,
         selectConversation,
         sendMessage,
+        removeConversation,
       }}
     >
       {children}

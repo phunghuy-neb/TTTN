@@ -1,5 +1,6 @@
-import mongoose from 'mongoose'
+﻿import mongoose from 'mongoose'
 import ChatMessage from '../models/ChatMessage.js'
+import ChatTurn from '../models/ChatTurn.js'
 import Conversation from '../models/Conversation.js'
 import Tour from '../models/Tour.js'
 import { sinhTraLoi, AiGatewayError } from '../services/aiAdapter.js'
@@ -767,3 +768,25 @@ export const deleteChatHistory = async (req, res) => {
     res.status(500).json({ success: false, message: 'Lỗi máy chủ.', code: 'SERVER_ERROR' })
   }
 }
+
+export const deleteConversation = async (req, res) => {
+  try {
+    const { id } = req.params
+    if (!id) return res.status(400).json({ success: false, message: 'Thiếu ID cuộc trò chuyện.' })
+
+    const conversation = await Conversation.findOneAndDelete({ _id: id, userId: req.user._id })
+    if (!conversation) {
+      return res.status(404).json({ success: false, message: 'Không tìm thấy cuộc trò chuyện.' })
+    }
+
+    await ChatMessage.deleteMany({ conversationId: id, userId: req.user._id })
+    await ChatTurn.deleteMany({ conversationId: id, userId: req.user._id })
+
+    res.json({ success: true, message: '�� x�a l?ch s? chat.' })
+  } catch (error) {
+    console.error('[deleteConversation]', error)
+    res.status(500).json({ success: false, message: 'Lỗi máy chủ.' })
+  }
+}
+
+

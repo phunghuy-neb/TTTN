@@ -16,6 +16,7 @@ export default function AiAssistant() {
     loadMoreConversations,
     createNewConversation,
     selectConversation,
+    removeConversation,
   } = useChat()
 
   return (
@@ -42,6 +43,7 @@ export default function AiAssistant() {
             loadingMore={loadingMoreConversations}
             onLoadMore={loadMoreConversations}
             creating={creatingConversation}
+            onDelete={removeConversation}
             className="min-h-0 flex-1 overflow-y-auto p-3"
           />
           <div className="border-t border-line p-4">
