@@ -7,14 +7,11 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import Tour from '../src/models/Tour.js';
+import { isForeignTourName, resolveTourRegions } from '../src/services/tourRegionResolver.js';
 
 const MAX_TOURS = 80; // Tăng lên 80 để bù lại những tour mock bị loại, đảm bảo đạt >= 50
 const CATEGORY_URLS = [
-  'https://www.ivivu.com/du-lich',
   'https://www.ivivu.com/du-lich/tour-trong-nuoc',
-  'https://www.ivivu.com/du-lich/tour-nuoc-ngoai',
-  'https://www.ivivu.com/du-lich/tour-chau-a',
-  'https://www.ivivu.com/du-lich/tour-chau-au',
   'https://www.ivivu.com/du-lich/tour-mien-bac',
   'https://www.ivivu.com/du-lich/tour-mien-trung',
   'https://www.ivivu.com/du-lich/tour-mien-nam'
@@ -34,22 +31,8 @@ function parseDays(title) {
   return 3; 
 }
 
-function mapRegion(name) {
-  const mienBac = ['Hà Nội', 'Hạ Long', 'Sapa', 'Tây Bắc', 'Hà Giang', 'Ninh Bình', 'Mộc Châu'];
-  const mienTrung = ['Đà Nẵng', 'Hội An', 'Nha Trang', 'Đà Lạt', 'Huế', 'Phú Yên', 'Quy Nhơn'];
-  
-  if (mienBac.some(p => name.includes(p))) return 'Miền Bắc';
-  if (mienTrung.some(p => name.includes(p))) return 'Miền Trung';
-  return 'Miền Nam'; 
-}
-
 async function scrapeIvivu() {
   await connectDB();
-  
-  // Dọn dẹp dữ liệu cũ (Xóa các tour giả lập trước đó)
-  console.log('🧹 Đang dọn dẹp dữ liệu cũ trong Database...');
-  await Tour.deleteMany({});
-  console.log('✅ Đã dọn sạch Database!');
 
   console.log('🚀 Khởi động Trình duyệt Cào dữ liệu (Puppeteer)...');
   const browser = await puppeteer.launch({ 
@@ -248,6 +231,20 @@ async function scrapeIvivu() {
         continue;
       }
 
+      if (isForeignTourName(tourData.name)) {
+        console.log('⚠️ Bỏ qua tour nước ngoài.');
+        continue;
+      }
+
+      const resolvedRegions = resolveTourRegions({
+        name: tourData.name,
+        itinerary: tourData.itinerary,
+      });
+      if (resolvedRegions.length === 0) {
+        console.log('⚠️ Bỏ qua tour vì không nhận diện được điểm đến Việt Nam.');
+        continue;
+      }
+
       const days = parseDays(tourData.name);
       
       // Tạo đợt khởi hành đa dạng cho 4 tháng tới (15-25 đợt)
@@ -285,7 +282,8 @@ async function scrapeIvivu() {
 
       const formattedTour = {
         name: tourData.name,
-        region: mapRegion(tourData.name),
+        // Schema vẫn giữ String; filter runtime sẽ resolve đầy đủ tour liên vùng.
+        region: resolvedRegions[0],
         location: tourData.name.split('-')[0].trim() || 'Việt Nam',
         summary: tourData.name,
         description: tourData.name,

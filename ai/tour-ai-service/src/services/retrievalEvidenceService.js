@@ -20,6 +20,8 @@ const DIRECT_EXCLUSION_HINTS = {
   "leo nhieu": ["leo nhiều", "leo nhiều bậc", "leo núi", "trekking", "bậc đá", "bậc thang"],
 };
 
+const { resolveTourRegions } = require("../utils/tourRegionResolver");
+
 const AMBIGUOUS_ASCII_SINGLE_WORDS = new Set([
   "bien", "dao", "vinh", "dong", "hang", "co", "bo", "pho", "chua", "son",
 ]);
@@ -108,7 +110,9 @@ function semanticInterestMatch(haystack, value) {
 }
 
 function tourEvidenceText(tour, { destinationOnly = false } = {}) {
-  const values = [tour.name, tour.location, tour.region, ...(tour.tags || [])];
+  // Runtime regions keep semantic evidence aligned with filtering when the stored
+  // Mongo region is stale; the stored field remains metadata-only.
+  const values = [tour.name, tour.location, ...resolveTourRegions(tour), ...(tour.tags || [])];
   if (!destinationOnly) {
     values.push(
       tour.summary,

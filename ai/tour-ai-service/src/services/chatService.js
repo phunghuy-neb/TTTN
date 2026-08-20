@@ -36,6 +36,7 @@ const {
   semanticPhraseMatch,
   tourEvidenceText,
 } = require("./retrievalEvidenceService");
+const { resolveTourRegions } = require("../utils/tourRegionResolver");
 const {
   ERROR_CODES,
   AiServiceError,
@@ -948,7 +949,7 @@ function evidenceUnits(tour) {
   const values = [
     tour?.name,
     tour?.location,
-    tour?.region,
+    ...resolveTourRegions(tour),
     ...textList(tour?.tags),
     tour?.summary,
     tour?.description,

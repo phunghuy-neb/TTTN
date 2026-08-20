@@ -20,12 +20,13 @@ const {
   buildGroundingContract,
   groundingForTour,
 } = require("./factualGroundingService");
+const { resolveTourRegions } = require("../utils/tourRegionResolver");
 
 const DESTINATION_REGIONS = new Map([
   ["phu quoc", "Miền Nam"],
   ["nha trang", "Miền Trung"],
   ["da nang", "Miền Trung"],
-  ["da lat", "Miền Nam"],
+  ["da lat", "Miền Trung"],
   ["ha long", "Miền Bắc"],
   ["sa pa", "Miền Bắc"],
   ["sapa", "Miền Bắc"],
@@ -51,6 +52,13 @@ const DESTINATIONS = [
   "Bình Hưng",
   "Miền Tây",
 ];
+
+function inferDestinationRegion(value) {
+  const runtimeRegions = resolveTourRegions({ name: value });
+  return runtimeRegions.length === 1
+    ? runtimeRegions[0]
+    : DESTINATION_REGIONS.get(normalizeText(value));
+}
 
 const INTEREST_KEYWORDS = [
   { value: "biển", words: ["bien", "dao", "tam bien"] },
@@ -816,7 +824,7 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
   if (explicitRegion) {
     delta.region = explicitRegion;
     markConstraint(meta, "region");
-    const oldDestinationRegion = DESTINATION_REGIONS.get(normalizeText(previousSemantic.slots.destination.values[0]));
+    const oldDestinationRegion = inferDestinationRegion(previousSemantic.slots.destination.values[0]);
     if (oldDestinationRegion && oldDestinationRegion !== explicitRegion) {
       removeConstraint(meta, "destination");
       regionReplacesDestination = true;
@@ -840,7 +848,7 @@ function extractConstraintDelta(message, previousState = {}, now = new Date()) {
     } else if (destinationSlot.status === "known" && destinationSlot.values.length) {
       if (destinationSlot.values.length === 1) delta.destination = destinationSlot.values[0];
       else delta.destinations = destinationSlot.values;
-      const inferredRegions = uniqueStrings(destinationSlot.values.map((value) => DESTINATION_REGIONS.get(normalizeText(value))));
+      const inferredRegions = uniqueStrings(destinationSlot.values.map(inferDestinationRegion));
       if (!explicitRegion && inferredRegions.length === 1) {
         delta.region = inferredRegions[0];
         markConstraint(meta, "region");
@@ -1259,9 +1267,11 @@ function recommendationReasonGroups(tour, constraints, preferences = {}, groundi
   const haystack = tourEvidenceText(tour);
   const normalizedHaystack = normalizeText(haystack);
   const evidence = collectTourConstraintEvidence(tour, constraints);
+  const runtimeRegions = resolveTourRegions(tour);
+  const runtimeRegionKeys = new Set(runtimeRegions.map(normalizeText));
   const matchedDestination = evidence.destination.find((item) => item.matched);
   if (matchedDestination) reasons.push(`đúng điểm đến ${matchedDestination.value}`);
-  else if (constraints.region && tour.region === constraints.region) reasons.push(`thuộc ${constraints.region}`);
+  else if (constraints.region && runtimeRegionKeys.has(normalizeText(constraints.region))) reasons.push(`thuộc ${constraints.region}`);
   const budgetLabel = semanticBudgetLabel(constraints);
   const budgetEvidence = budgetMatchEvidence(factualPrice, constraints);
   if (budgetLabel && budgetEvidence.matched) reasons.push(`mức giá tương thích với ${budgetLabel}`);
@@ -1306,8 +1316,9 @@ function recommendationReasonGroups(tour, constraints, preferences = {}, groundi
     if (matches.length) preferenceReasons.push(`${label} ${matches.join(", ")}`);
   };
   addPreferenceMatch(preferences.preferredDestinations, "điểm đến bạn thường thích", primaryHaystack);
-  if (!constraints.region && (preferences.preferredRegions || []).some((region) => normalizeText(region) === normalizeText(tour.region))) {
-    preferenceReasons.push(`thuộc ${tour.region}, khu vực bạn thường ưu tiên`);
+  const preferredRegion = (preferences.preferredRegions || []).find((region) => runtimeRegionKeys.has(normalizeText(region)));
+  if (!constraints.region && preferredRegion) {
+    preferenceReasons.push(`thuộc ${preferredRegion}, khu vực bạn thường ưu tiên`);
   }
   if (!hasCurrentStyle) addPreferenceMatch(preferences.travelStyles, "phong cách bạn thường ưu tiên");
   addPreferenceMatch(preferences.interests, "sở thích đã lưu");

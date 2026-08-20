@@ -23,6 +23,7 @@ const {
   priceMeetsConstraints,
   effectivePartySize,
 } = require("./factualGroundingService");
+const { resolveTourRegions } = require("../utils/tourRegionResolver");
 
 const TOP_K = 30;
 const MONGO_RECALL_LIMIT = Math.max(100, Number(process.env.RAG_MONGO_RECALL_LIMIT) || 500);
@@ -44,11 +45,17 @@ function tourSearchText(tour) {
   return tourEvidenceText(tour);
 }
 
+function tourMatchesRegion(tour, region) {
+  if (!region) return true;
+  const requested = normalizeText(region);
+  return resolveTourRegions(tour).some((candidate) => normalizeText(candidate) === requested);
+}
+
 function factualFitEvidence(tour, constraints = {}, evidence = collectTourConstraintEvidence(tour, constraints), grounding = null) {
   const factual = grounding || buildTourFactualContext(tour, constraints);
   const values = [];
   if (evidence.destination.some((item) => item.matched)) values.push("destination");
-  if (constraints.region && normalizeText(tour.region) === normalizeText(constraints.region)) values.push("region");
+  if (constraints.region && tourMatchesRegion(tour, constraints.region)) values.push("region");
   if (tourMatchesDuration(tour, constraints) && (constraints.days || currentDurationSlot(constraints))) values.push("duration");
   const semanticBudget = constraints?.[SEMANTIC_STATE_KEY]?.slots?.budget;
   if ((semanticBudget?.status === "known" || constraints.minPrice != null || constraints.maxPrice != null) && priceMeetsConstraints(factual.priceBasis.amount, constraints)) values.push("budget");
@@ -138,7 +145,7 @@ function tourMatchesConstraints(tour, constraints = {}, options = {}) {
 
   const evidence = options.evidence || collectTourConstraintEvidence(tour, constraints);
   const grounding = options.grounding || buildTourFactualContext(tour, constraints, { now: options.now });
-  if (constraints.region && normalizeText(tour.region) !== normalizeText(constraints.region)) return false;
+  if (constraints.region && !tourMatchesRegion(tour, constraints.region)) return false;
   if (evidence.destination.length && !evidence.destination.some((item) => item.matched)) return false;
   if (evidence.exclusions.some((item) => item.matched)) return false;
   if (!constraints.dateRange?.start && budgetIsHardConstraint(constraints) && !priceMeetsConstraints(grounding.priceBasis.amount, constraints)) return false;
@@ -161,7 +168,7 @@ function scoreTour(tour, constraints = {}, candidateOrder = new Map(), evidence 
   const factual = grounding || buildTourFactualContext(tour, constraints);
   let score = 0;
   if (evidence.destination.some((item) => item.matched)) score += 12;
-  if (constraints.region && normalizeText(tour.region) === normalizeText(constraints.region)) score += 7;
+  if (constraints.region && tourMatchesRegion(tour, constraints.region)) score += 7;
   const durationSlot = currentDurationSlot(constraints);
   const durationWeight = durationSlot?.operator === "approximate"
     ? currentFieldWeight(constraints, "days")
@@ -195,6 +202,8 @@ function preferenceScore(tour, preferences = {}, constraints = {}, grounding = n
     constraints.region,
     ...(constraints.interests || []),
   ].filter(Boolean).map(normalizeText));
+  const runtimeRegions = resolveTourRegions(tour);
+  const runtimeRegionKeys = new Set(runtimeRegions.map(normalizeText));
   const currentExclusions = new Set((constraints.exclusions || []).map(normalizeText));
   const allowed = (values = []) => (values || []).filter((value) => !currentExclusions.has(normalizeText(value)));
   const matches = (values = [], source = haystack) => allowed(values).filter((value) => matchesPreferenceTerm(source, value));
@@ -204,7 +213,7 @@ function preferenceScore(tour, preferences = {}, constraints = {}, grounding = n
   const hasCurrentArea = currentAreas.size > 0;
   const hasCurrentStyle = Boolean(constraints.pace || (constraints.interests || []).some((value) => ["nghi duong", "kham pha", "mao hiem"].includes(normalizeText(value))));
   if (!hasCurrentArea) score += unmatchedByCurrent(preferences.preferredDestinations || [], primaryHaystack).length * 4;
-  if (!hasCurrentArea && (preferences.preferredRegions || []).some((value) => normalizeText(value) === normalizeText(tour.region))) score += 3;
+  if (!hasCurrentArea && (preferences.preferredRegions || []).some((value) => runtimeRegionKeys.has(normalizeText(value)))) score += 3;
   if (!hasCurrentStyle) score += unmatchedByCurrent(preferences.travelStyles || []).length * 3;
   if (!hasCurrentArea) score += unmatchedByCurrent(preferences.interests || []).length * 3;
   if (!hasCurrentStyle) score += (preferences.travelStyles || []).filter((value) => matchesPreferenceTerm(primaryHaystack, value)).length;
@@ -212,7 +221,7 @@ function preferenceScore(tour, preferences = {}, constraints = {}, grounding = n
   if (constraints.accommodationRequired !== false) score += unmatchedByCurrent(preferences.accommodationPreferences || []).length * 2;
 
   if (!hasCurrentArea && matches(preferences.dislikedDestinations || []).length) score -= 5;
-  if (!hasCurrentArea && (preferences.dislikedRegions || []).some((value) => normalizeText(value) === normalizeText(tour.region))) score -= 4;
+  if (!hasCurrentArea && (preferences.dislikedRegions || []).some((value) => runtimeRegionKeys.has(normalizeText(value)))) score -= 4;
   if (!hasCurrentStyle) score -= unmatchedByCurrent(preferences.dislikedTravelStyles || []).length * 3;
   if (!hasCurrentArea) score -= matches(preferences.dislikedInterests || []).length * 3;
   score -= matches(preferences.dislikedAccommodationPreferences || []).length * 2;
@@ -425,7 +434,7 @@ function buildContextText(tours, options = {}) {
       ? `departureId=${facts.availability.departureId} date=${facts.availability.dateIso} remainingSlots=${facts.availability.remainingSlots} partySize=${facts.partySize} availableForParty=${facts.availability.availableForParty}`
       : "unknown (no selected departure)";
     return [
-      `[Tour ${index + 1} | ID ${tour._id}] ${tour.name} - ${tour.location}, ${tour.region}`,
+      `[Tour ${index + 1} | ID ${tour._id}] ${tour.name} - ${tour.location}, runtimeRegions=${resolveTourRegions(tour).join(", ") || "unknown"}, storedRegion=${tour.region || "unknown"}`,
       `DurationDays: ${tour.days}`,
       `FACTUAL PRICE BASIS FOR THIS REQUEST: ${priceBasisText}`,
       `FACTUAL AVAILABILITY FOR THIS REQUEST: ${availabilityText}`,
@@ -590,9 +599,8 @@ function buildMongoFallbackQuery(constraints = {}, excludedIds = []) {
     isActive: { $ne: false },
     ...(excludedIds.length ? { _id: { $nin: excludedIds } } : {}),
   };
-  if (constraints.region) query.region = constraints.region;
   // With a requested date, departure price is authoritative. Keep Mongo recall broad
-  // and apply date/price/party constraints together after hydration.
+  // and apply date/price/party/region constraints together after hydration.
   const semanticBudget = constraints?.[SEMANTIC_STATE_KEY]?.slots?.budget;
   const budgetNeedsBroadRecall = semanticBudget?.status === "known" &&
     (semanticBudget.scope === "unspecified" || semanticBudget.operator === "approximate");

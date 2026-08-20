@@ -4,6 +4,7 @@
 // ============================================================
 import Tour from '../models/Tour.js'
 import { validateTourNumericQuery } from '../services/tourQueryValidation.js'
+import { resolveTourRegions } from '../services/tourRegionResolver.js'
 
 // ── Helper: Xây URL ảnh đầy đủ ───────────────────────────────
 const buildImageUrl = (req, filename) =>
@@ -52,8 +53,6 @@ export const getTours = async (req, res) => {
       filter.status = 'published'
       filter.isActive = { $ne: false } // tour soft-delete (Batch 3) ẩn khỏi client
     }
-
-    if (region) filter.region = region
 
     // days: số chính xác. Query sai kiểu trả 400 thay vì để NaN chui xuống
     // Mongoose gây CastError rồi rơi vào catch chung thành 500.
@@ -104,13 +103,24 @@ export const getTours = async (req, res) => {
     const limitNum = Math.min(50, limit)
     const skip = (pageNum - 1) * limitNum
 
+    let finalFilter = filter
+    if (region) {
+      const candidates = await Tour.find(filter)
+        .select('name location summary description itinerary.title itinerary.description')
+        .lean()
+      const matchingIds = candidates
+        .filter((tour) => resolveTourRegions(tour).includes(region))
+        .map((tour) => tour._id)
+      finalFilter = { ...filter, _id: { $in: matchingIds } }
+    }
+
     const [tours, total] = await Promise.all([
-      Tour.find(filter)
+      Tour.find(finalFilter)
         .sort(sort)
         .skip(skip)
         .limit(limitNum)
         .select('-itinerary -reviews -vectorSync -searchText'), // Bỏ field nặng ở danh sách
-      Tour.countDocuments(filter),
+      Tour.countDocuments(finalFilter),
     ])
 
     res.json({

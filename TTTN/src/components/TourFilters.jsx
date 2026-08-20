@@ -1,24 +1,7 @@
 // Thanh lọc/sắp xếp — KHÔNG tự giữ state, KHÔNG đọc URL.
 // Chỉ nhận bộ lọc hiện tại qua prop `value` và báo thay đổi qua `onChange`.
 import { REGIONS } from '../constants/regions.js'
-
-// Ánh xạ khoảng giá ↔ cặp minPrice/maxPrice (đơn vị VNĐ, '' hoặc '0' = không giới hạn)
-const PRICE_OPTIONS = [
-  { key: '', label: 'Tất cả', min: '', max: '' },
-  { key: 'lt3', label: 'Dưới 3 triệu', min: '0', max: '3000000' },
-  { key: '3-6', label: '3–6 triệu', min: '3000000', max: '6000000' },
-  { key: 'gt6', label: 'Trên 6 triệu', min: '6000000', max: '0' },
-]
-
-// Suy ra khoá khoảng giá đang chọn từ min/max hiện tại
-function priceKey(minPrice, maxPrice) {
-  const mn = Number(minPrice) || 0
-  const mx = Number(maxPrice) || 0
-  if (mn === 0 && mx === 3000000) return 'lt3'
-  if (mn === 3000000 && mx === 6000000) return '3-6'
-  if (mn === 6000000 && mx === 0) return 'gt6'
-  return ''
-}
+import { PRICE_OPTIONS, priceKey } from '../constants/tourFilterRanges.js'
 
 export default function TourFilters({ value, onChange }) {
   // Có ít nhất một bộ lọc khác mặc định
