@@ -1484,7 +1484,12 @@ function buildComparison(tours, constraints, options = {}) {
     if (constraints.maxPrice && factual.priceBasis.amount !== null && factual.priceBasis.amount > constraints.maxPrice) cons.push("vượt ngân sách hiện tại");
     if (constraints.days && tour.days !== constraints.days) cons.push(`khác thời lượng mong muốn ${constraints.days} ngày`);
     if (constraints.dateRange && !factual.availability?.availableForParty) cons.push(`không đủ chỗ cho đoàn ${factual.partySize} người vào ngày đã chọn`);
-    if (!cons.length && !(tour.highlights || []).length) cons.push("dữ liệu điểm nổi bật còn hạn chế");
+    
+    let highlights = (tour.highlights || []).filter(Boolean);
+    if (!highlights.length && tour.itinerary && tour.itinerary.length) {
+      highlights = tour.itinerary.map(day => day.title).filter(Boolean);
+    }
+
     return {
       tourId: String(tour._id),
       name: tour.name,
@@ -1493,7 +1498,7 @@ function buildComparison(tours, constraints, options = {}) {
       availability: factual.availability,
       factualFingerprint: factual.fingerprint,
       duration: tour.days,
-      relevantHighlights: (tour.highlights || []).slice(0, 4),
+      relevantHighlights: highlights.slice(0, 4),
       accommodation: accommodations.slice(0, 3),
       pros,
       cons,
@@ -1546,7 +1551,7 @@ function buildComparisonReply(comparison) {
   for (const tour of comparison.tours) {
     lines.push(`\n**${tour.name}** — ${tour.duration} ngày, từ ${formatMoney(tour.price)}.`);
     if (tour.relevantHighlights.length) lines.push(`Điểm nổi bật: ${tour.relevantHighlights.join("; ")}.`);
-    lines.push(tour.pros.length ? `Ưu điểm: ${tour.pros.join("; ")}.` : "Ưu điểm theo yêu cầu hiện tại: chưa có dữ liệu đủ rõ để kết luận.");
+    if (tour.pros.length) lines.push(`Ưu điểm theo yêu cầu: ${tour.pros.join("; ")}.`);
     if (tour.cons.length) lines.push(`Điểm cần cân nhắc: ${tour.cons.join("; ")}.`);
   }
   if (comparison.recommendation) lines.push(`\nKhuyến nghị: ${comparison.recommendation.reason}`);

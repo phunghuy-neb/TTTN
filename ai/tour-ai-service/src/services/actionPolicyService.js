@@ -63,7 +63,7 @@ function classifyTurn(message) {
     || /\b(?:(?:danh sach|list|lua chon|phuong an)(?: nao)? khac|(?:them|dua|cho|tim)\b.{0,20}\b(?:tour|lua chon|phuong an) khac)\b/.test(normalized);
   const excludeHistoricalResults = rejectsCurrentResults
     || /\b(?:khac han|khac hoan toan|hoan toan khac)\b/.test(normalized);
-  const explicitSearch = alternativeResults || /\btim\b(?!\s+hieu\b)|\b(?:goi y|de xuat|tu van)\b|\bdanh sach\s+(?:cac\s+|vai\s+)?tour\b|\b(?:dua|cho)\s+(?:toi\s+)?(?:vai|may|mot so)?\s*(?:lua chon|phuong an)(?:\s+xem)?\b|\bcon tour\b.{0,24}\bthi sao\b/.test(normalized);
+  const explicitSearch = alternativeResults || /\btim\b(?!\s+hieu\b)|\b(?:goi y|de xuat|tu van)\b|\bdanh sach\s+(?:cac\s+|vai\s+)?tour\b|\b(?:dua|cho)\s+(?:toi\s+)?(?:vai|may|mot so)?\s*(?:lua chon|phuong an)(?:\s+xem)?\b|\bcon tour\b.{0,24}\bthi sao\b|\b(?:co\s+)?tour nao\b/.test(normalized);
   const explicitUpdate = /\b(?:doi(?: tieu chi)? (?:thanh|sang)|sua (?:thanh|lai)|cap nhat|chuyen sang|lan nay|chuyen nay|chuyen di nay)\b/.test(normalized);
   const comparisonEvaluation = !explicitSearch && !explicitUpdate && /\b(?:nen|chon)\b.{1,80}\bhay\b.{1,80}(?:\?|$)/.test(normalized);
   const evaluativeQuestion = !explicitSearch && !explicitUpdate && Boolean(

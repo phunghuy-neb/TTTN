@@ -2036,8 +2036,17 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
     }
 
     const detail = buildTourDetail(tour, effectivePrompt, input.now, factualConstraints);
+    let finalReply = detail.reply;
+    try {
+      const systemInstruction = "Bạn là chuyên viên tư vấn du lịch nhiệt tình của VietVoyage. Dựa vào thông tin chi tiết tour dưới đây, hãy trả lời câu hỏi của khách một cách tự nhiên, linh hoạt và có cảm xúc (không bê nguyên văn bản dài dòng). Nếu khách hỏi tóm tắt, hãy tóm tắt thật ngắn gọn, sinh động, dễ đọc.";
+      const prompt = `Câu hỏi của khách: "${input.prompt}"\n\nThông tin tour thô (hãy dùng thông tin này làm cốt lõi để viết thành câu trả lời):\n${detail.reply}`;
+      finalReply = await generateChatReply(prompt, systemInstruction);
+    } catch (err) {
+      console.error("Generative LLM error in ANSWER:", err.message);
+    }
+
     return finalize({
-      reply: detail.reply,
+      reply: finalReply,
       intent,
       constraintState,
       entityState: entityStateBase,
@@ -2096,10 +2105,21 @@ async function generateChatAnswer(promptOrOptions, tourContext = null, history =
       && selectedFocusIds.length === 1
       && prepared.changedFields.length > 0
       && prepared.changedFields.every((field) => field === "travelers");
+    const baseReply = items.length
+      ? buildRecommendationReply(items, effectiveConstraints, { operation: value.operation })
+      : buildZeroResultReply(effectiveConstraints, rag.zeroResult || {}, { operation: value.operation });
+
+    let finalReply = baseReply;
+    try {
+      const systemInstruction = "Bạn là chuyên viên tư vấn du lịch nhiệt tình của VietVoyage. Dựa vào kết quả tìm kiếm thô dưới đây, hãy trả lời câu hỏi của khách một cách tự nhiên, linh hoạt và có cảm xúc (không lặp lại câu cứng nhắc). Trực tiếp giải thích lý do tại sao tour này phù hợp với nhu cầu/hoàn cảnh của họ.";
+      const prompt = `Câu hỏi/Hoàn cảnh của khách: "${input.prompt}"\n\nKết quả tìm kiếm thô (hãy dùng thông tin này làm cốt lõi để viết thành đoạn văn tư vấn):\n${baseReply}`;
+      finalReply = await generateChatReply(prompt, systemInstruction);
+    } catch (err) {
+      console.error("Generative LLM error:", err.message);
+    }
+
     return finalize({
-      reply: items.length
-        ? buildRecommendationReply(items, effectiveConstraints, { operation: value.operation })
-        : buildZeroResultReply(effectiveConstraints, rag.zeroResult || {}, { operation: value.operation }),
+      reply: finalReply,
       intent,
       constraintState,
       entityState: nextEntityState(prepared.entityState, {

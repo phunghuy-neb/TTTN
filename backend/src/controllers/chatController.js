@@ -1,4 +1,4 @@
-﻿import mongoose from 'mongoose'
+import mongoose from 'mongoose'
 import ChatMessage from '../models/ChatMessage.js'
 import ChatTurn from '../models/ChatTurn.js'
 import Conversation from '../models/Conversation.js'
